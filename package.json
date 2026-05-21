@@ -1,0 +1,28 @@
+{
+  "name": "mediasoup-client-wrtc",
+  "version": "0.0.0",
+  "description": "Mediasoup-client handler for Node.js using `wrtc` compatible packages",
+  "keywords": [
+    "handler",
+    "Mediasoup",
+    "mediasoup-client",
+    "Node.js"
+  ],
+  "license": "ISC",
+  "author": "Jesús Leganés-Combarro 'piranna' (https://piranna.github.io)",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "mediasoup-client": "^3.20.0"
+  },
+  "devDependencies": {
+    "@roamhq/wrtc": "^0.10.0",
+    "@types/sdp-transform": "^2.15.0",
+    "typescript": "^6.0.3"
+  }
+}
