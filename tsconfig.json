@@ -23,7 +23,8 @@
     "verbatimModuleSyntax": true
   },
   "include": [
-    "index.ts"
+    "index.ts",
+    "test-hooks.ts"
   ],
   "exclude": [
     "node_modules"

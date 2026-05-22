@@ -34,6 +34,7 @@ import type * as SdpTransform from 'sdp-transform';
 
 const NAME = 'wrtc';
 const SCTP_NUM_STREAMS = { OS: 65535, MIS: 65535 };
+const WRTC_HANDLER_TEST_HOOKS = Symbol.for('mediasoup-client-wrtc/test-hooks');
 
 
 type LoggerSink = Pick<Console, 'info' | 'warn' | 'error'>;
@@ -83,6 +84,10 @@ export interface WrtcLike
   MediaStream: new () => MediaStream;
 }
 
+type ReleasableMediaStream = MediaStream & {
+  release?: (releaseTracks?: boolean) => void;
+};
+
 
 export class WrtcHandler
   extends EnhancedEventEmitter<HandlerEvents>
@@ -102,6 +107,13 @@ export class WrtcHandler
   #hasDataChannelMediaSection = false;
   #nextSendSctpStreamId = 0;
   #transportReady = false;
+
+  readonly [WRTC_HANDLER_TEST_HOOKS] = {
+    setupTransportWithoutLocalSdp: async (localDtlsRole: DtlsRole): Promise<void> =>
+    {
+      await this.#setupTransport({ localDtlsRole });
+    },
+  };
 
   static createFactory(wrtc: WrtcLike, loggerSink: LoggerSink = console): HandlerFactory
   {
@@ -255,6 +267,14 @@ export class WrtcHandler
       return;
 
     this.#closed = true;
+
+    const sendStream = this.#sendStream as ReleasableMediaStream | undefined;
+
+    try
+    {
+      sendStream?.release?.(false);
+    }
+    catch (error) { /* ignore */ }
 
     try
     {
@@ -435,6 +455,9 @@ export class WrtcHandler
     await this.#pc!.setLocalDescription(offer);
 
     let localId: string | undefined = transceiver.mid ?? undefined;
+
+    if (!localId)
+      this.#logger.warn('send() | missing transceiver.mid, applying delayed MID workaround');
 
     sendingRtpParameters.mid = localId;
 

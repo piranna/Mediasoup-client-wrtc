@@ -3,4 +3,5 @@
 test/
 index.ts
 server.ts
+test-hooks.ts
 tsconfig.json

@@ -5,6 +5,7 @@ import * as sdpTransform from "sdp-transform";
 import { ortc, testFakeParameters } from "mediasoup-client";
 
 import { WrtcHandler } from "../index.js";
+import { setupTransportWithoutLocalSdpForTest } from "../test-hooks.js";
 
 const VALID_OFFER_SDP = `v=0
 o=- 0 0 IN IP4 127.0.0.1
@@ -321,10 +322,30 @@ class MockMediaStream {
   }
 }
 
-function createWrtc(pcClass = MockRTCPeerConnection) {
+class MockMediaStreamWithRelease extends MockMediaStream {
+  static releaseCalls = [];
+
+  release(releaseTracks) {
+    MockMediaStreamWithRelease.releaseCalls.push(releaseTracks);
+  }
+}
+
+class MockMediaStreamWithThrowingRelease extends MockMediaStream {
+  static releaseCalls = 0;
+
+  release() {
+    MockMediaStreamWithThrowingRelease.releaseCalls += 1;
+    throw new Error("release failed");
+  }
+}
+
+function createWrtc(
+  pcClass = MockRTCPeerConnection,
+  mediaStreamClass = MockMediaStream,
+) {
   return {
     RTCPeerConnection: pcClass,
-    MediaStream: MockMediaStream,
+    MediaStream: mediaStreamClass,
   };
 }
 
@@ -1176,4 +1197,47 @@ test("targeted remaining boolean branches are exercised", async () => {
     await handler.stopReceiving([recv.localId]);
     handler.close();
   }
+});
+
+test("close() releases local stream when runtime exposes release()", () => {
+  MockMediaStreamWithRelease.releaseCalls = [];
+
+  const wrtc = createWrtc(
+    MockRTCPeerConnection,
+    MockMediaStreamWithRelease,
+  );
+  const factory = WrtcHandler.createFactory(wrtc);
+  const handler = factory.factory(createHandlerOptions("send"));
+
+  handler.close();
+
+  assert.deepEqual(MockMediaStreamWithRelease.releaseCalls, [false]);
+});
+
+test("close() tolerates local stream release() errors", () => {
+  MockMediaStreamWithThrowingRelease.releaseCalls = 0;
+
+  const wrtc = createWrtc(
+    MockRTCPeerConnection,
+    MockMediaStreamWithThrowingRelease,
+  );
+  const factory = WrtcHandler.createFactory(wrtc);
+  const handler = factory.factory(createHandlerOptions("send"));
+
+  handler.close();
+
+  assert.equal(MockMediaStreamWithThrowingRelease.releaseCalls, 1);
+});
+
+test("test-hooks can execute setupTransport() fallback without localSdpObject", async () => {
+  const wrtc = createWrtc();
+  const factory = WrtcHandler.createFactory(wrtc);
+  const handler = factory.factory(createHandlerOptions("send"));
+
+  attachConnectHandler(handler);
+
+  await handler.send({ track: { id: "hook-setup-transport", kind: "audio" } });
+  await setupTransportWithoutLocalSdpForTest(handler, "client");
+
+  handler.close();
 });

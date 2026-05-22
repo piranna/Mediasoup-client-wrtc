@@ -145,3 +145,5 @@ vite.config.ts.timestamp-*
 .v8cov/
 index.d.ts*
 index.js*
+test-hooks.d.ts*
+test-hooks.js*
