@@ -1,21 +1,26 @@
 {
   "compilerOptions": {
-    "target": "esnext",
-    "module": "nodenext",
-    "moduleResolution": "nodenext",
+    "declaration": true,
+    "declarationMap": true,
+    "erasableSyntaxOnly": true,
+    "esModuleInterop": true,
     "lib": [
       "ESNext",
       "DOM"
     ],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
     "outDir": "./",
+    "rewriteRelativeImportExtensions": true,
     "rootDir": "./",
-    "strict": true,
-    "declaration": true,
-    "declarationMap": true,
+    "skipLibCheck": true,
     "sourceMap": true,
-    "erasableSyntaxOnly": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true
+    "strict": true,
+    "target": "esnext",
+    "types": [
+      "node"
+    ],
+    "verbatimModuleSyntax": true
   },
   "include": [
     "index.ts"

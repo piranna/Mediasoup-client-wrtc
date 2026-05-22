@@ -142,3 +142,6 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 .early.coverage/
+.v8cov/
+index.d.ts*
+index.js*

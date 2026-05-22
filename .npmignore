@@ -1,0 +1,6 @@
+*.tgz
+.v8cov/
+test/
+index.ts
+server.ts
+tsconfig.json

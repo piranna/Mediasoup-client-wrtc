@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 
 import { Device } from 'mediasoup-client';
-import { RTCPeerConnection } from '@roamhq/wrtc';
+import * as wrtc from '@roamhq/wrtc';
 
-import createHandlerFactory from '.';
+import { WrtcHandler } from '.';
 
 
 
 async function main() {
-  const handlerFactory = createHandlerFactory()
+  const handlerFactory = WrtcHandler.createFactory(wrtc);
 
   const device = new Device({ handlerFactory });
 

@@ -1,4 +1,6 @@
-import createDebug from 'debug';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+
 import { EnhancedEventEmitter } from 'mediasoup-client/enhancedEvents';
 import * as ortc from 'mediasoup-client/ortc';
 import { parseScalabilityMode } from 'mediasoup-client';
@@ -32,7 +34,42 @@ import type * as SdpTransform from 'sdp-transform';
 
 const NAME = 'wrtc';
 const SCTP_NUM_STREAMS = { OS: 65535, MIS: 65535 };
-const logger = new Logger(NAME);
+
+
+type LoggerSink = Pick<Console, 'info' | 'warn' | 'error'>;
+
+type MediasoupLoggerInstance = {
+  debug: { log?: (...args: unknown[]) => void; (...args: unknown[]): void };
+  warn: { log?: (...args: unknown[]) => void; (...args: unknown[]): void };
+  error: { log?: (...args: unknown[]) => void; (...args: unknown[]): void };
+};
+
+type MediasoupLoggerClass = new (prefix?: string) => MediasoupLoggerInstance;
+type InvalidStateErrorClass = new (message: string) => Error;
+
+const require = createRequire(import.meta.url);
+const mediasoupMainPath = require.resolve('mediasoup-client');
+const mediasoupLibPath = dirname(mediasoupMainPath);
+
+const { Logger: MediasoupLogger } = require(join(mediasoupLibPath, 'Logger.js')) as {
+  Logger: MediasoupLoggerClass;
+};
+
+const { InvalidStateError } = require(join(mediasoupLibPath, 'errors.js')) as {
+  InvalidStateError: InvalidStateErrorClass;
+};
+
+
+function createLogger(prefix: string, sink: LoggerSink): MediasoupLoggerInstance
+{
+  const logger = new MediasoupLogger(prefix);
+
+  logger.debug.log = sink.info.bind(sink);
+  logger.warn.log = sink.warn.bind(sink);
+  logger.error.log = sink.error.bind(sink);
+
+  return logger;
+}
 
 
 /**
@@ -47,30 +84,92 @@ export interface WrtcLike
 }
 
 
-class WrtcHandler
+export class WrtcHandler
   extends EnhancedEventEmitter<HandlerEvents>
   implements HandlerInterface
 {
-  private readonly _wrtc: WrtcLike;
+  readonly #wrtcRuntime: WrtcLike;
+  readonly #logger: MediasoupLoggerInstance;
 
-  private _closed = false;
-  private _direction: 'send' | 'recv' | undefined;
-  private _remoteSdp: RemoteSdp | undefined;
-  private _getSendExtendedRtpCapabilities: HandlerOptions['getSendExtendedRtpCapabilities'] | undefined;
-  private _forcedLocalDtlsRole: DtlsRole | undefined;
-  private _pc: RTCPeerConnection | undefined;
-  private readonly _mapMidTransceiver = new Map<string, RTCRtpTransceiver>();
-  private _sendStream: MediaStream | undefined;
-  private _hasDataChannelMediaSection = false;
-  private _nextSendSctpStreamId = 0;
-  private _transportReady = false;
+  #closed = false;
+  #direction: 'send' | 'recv' | undefined;
+  #remoteSdp: RemoteSdp | undefined;
+  #getSendExtendedRtpCapabilitiesCb: HandlerOptions['getSendExtendedRtpCapabilities'] | undefined;
+  #forcedLocalDtlsRole: DtlsRole | undefined;
+  #pc: RTCPeerConnection | undefined;
+  readonly #mapMidTransceiver = new Map<string, RTCRtpTransceiver>();
+  #sendStream: MediaStream | undefined;
+  #hasDataChannelMediaSection = false;
+  #nextSendSctpStreamId = 0;
+  #transportReady = false;
 
-  constructor(wrtc: WrtcLike, options: HandlerOptions)
+  static createFactory(wrtc: WrtcLike, loggerSink: LoggerSink = console): HandlerFactory
+  {
+    const logger = createLogger(NAME, loggerSink);
+
+    function factory(options: HandlerOptions): HandlerInterface
+    {
+      return new WrtcHandler(wrtc, options, logger);
+    }
+
+    async function getNativeRtpCapabilities(
+      {direction}: HandlerGetNativeRtpCapabilitiesOptions
+    ): Promise<RtpCapabilities>
+    {
+      logger.debug('getNativeRtpCapabilities() [direction:%o]', direction);
+
+      let pc: RTCPeerConnection | undefined = new wrtc.RTCPeerConnection({
+        iceServers: [],
+        iceTransportPolicy: 'all',
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
+      });
+
+      try
+      {
+        pc.addTransceiver('audio', { direction });
+        pc.addTransceiver('video', { direction });
+
+        const offer = await pc.createOffer();
+
+        try { pc.close(); } catch (error) { /* ignore */ }
+        pc = undefined;
+
+        const sdpObject = sdpTransform.parse(offer.sdp!);
+
+        return WrtcHandler.getLocalRtpCapabilities(sdpObject);
+      }
+      catch (error)
+      {
+        try { pc?.close(); } catch (error2) { /* ignore */ }
+        pc = undefined;
+        throw error;
+      }
+    }
+
+    async function getNativeSctpCapabilities()
+    {
+      logger.debug('getNativeSctpCapabilities()');
+
+      return { numStreams: SCTP_NUM_STREAMS };
+    }
+
+    return {
+      name: NAME,
+
+      factory,
+      getNativeRtpCapabilities,
+      getNativeSctpCapabilities
+    };
+  }
+
+  constructor(wrtc: WrtcLike, options: HandlerOptions, logger: MediasoupLoggerInstance)
   {
     super();
-    logger.debug('constructor()');
+    this.#logger = logger;
+    this.#logger.debug('constructor()');
 
-    this._wrtc = wrtc;
+    this.#wrtcRuntime = wrtc;
 
     const {
       direction,
@@ -84,24 +183,24 @@ class WrtcHandler
       getSendExtendedRtpCapabilities,
     } = options;
 
-    this._direction = direction;
-    this._remoteSdp = new RemoteSdp({
+    this.#direction = direction;
+    this.#remoteSdp = new RemoteSdp({
       iceParameters,
       iceCandidates,
       dtlsParameters,
       sctpParameters,
     });
-    this._getSendExtendedRtpCapabilities = getSendExtendedRtpCapabilities;
+    this.#getSendExtendedRtpCapabilitiesCb = getSendExtendedRtpCapabilities;
 
     if (dtlsParameters.role && dtlsParameters.role !== 'auto')
     {
-      this._forcedLocalDtlsRole =
+      this.#forcedLocalDtlsRole =
         (dtlsParameters.role === 'server' ? 'client' : 'server') as DtlsRole;
     }
 
-    this._sendStream = new this._wrtc.MediaStream();
+    this.#sendStream = new this.#wrtcRuntime.MediaStream();
 
-    this._pc = new this._wrtc.RTCPeerConnection({
+    this.#pc = new this.#wrtcRuntime.RTCPeerConnection({
       iceServers: iceServers ?? [],
       iceTransportPolicy: iceTransportPolicy ?? 'all',
       bundlePolicy: 'max-bundle',
@@ -109,17 +208,17 @@ class WrtcHandler
       ...additionalSettings,
     });
 
-    this._pc.addEventListener('icegatheringstatechange', this._onIceGatheringStateChange);
-    this._pc.addEventListener('icecandidateerror', this._onIceCandidateError);
+    this.#pc.addEventListener('icegatheringstatechange', this.#onIceGatheringStateChange);
+    this.#pc.addEventListener('icecandidateerror', this.#onIceCandidateError);
 
-    if (this._pc.connectionState)
+    if (this.#pc.connectionState)
     {
-      this._pc.addEventListener('connectionstatechange', this._onConnectionStateChange);
+      this.#pc.addEventListener('connectionstatechange', this.#onConnectionStateChange);
     }
     else
     {
-      logger.warn('constructor() | pc.connectionState not supported, using pc.iceConnectionState');
-      this._pc.addEventListener('iceconnectionstatechange', this._onIceConnectionStateChange);
+      this.#logger.warn('constructor() | pc.connectionState not supported, using pc.iceConnectionState');
+      this.#pc.addEventListener('iceconnectionstatechange', this.#onIceConnectionStateChange);
     }
   }
 
@@ -150,23 +249,23 @@ class WrtcHandler
 
   close(): void
   {
-    logger.debug('close()');
+    this.#logger.debug('close()');
 
-    if (this._closed)
+    if (this.#closed)
       return;
 
-    this._closed = true;
+    this.#closed = true;
 
     try
     {
-      this._pc!.close();
+      this.#pc!.close();
     }
     catch (error) { /* ignore */ }
 
-    this._pc!.removeEventListener('icegatheringstatechange', this._onIceGatheringStateChange);
-    this._pc!.removeEventListener('icecandidateerror', this._onIceCandidateError);
-    this._pc!.removeEventListener('connectionstatechange', this._onConnectionStateChange);
-    this._pc!.removeEventListener('iceconnectionstatechange', this._onIceConnectionStateChange);
+    this.#pc!.removeEventListener('icegatheringstatechange', this.#onIceGatheringStateChange);
+    this.#pc!.removeEventListener('icecandidateerror', this.#onIceCandidateError);
+    this.#pc!.removeEventListener('connectionstatechange', this.#onConnectionStateChange);
+    this.#pc!.removeEventListener('iceconnectionstatechange', this.#onIceConnectionStateChange);
 
     this.emit('@close');
     super.close();
@@ -174,55 +273,55 @@ class WrtcHandler
 
   async updateIceServers(iceServers: RTCIceServer[]): Promise<void>
   {
-    this._assertNotClosed();
-    logger.debug('updateIceServers()');
+    this.#assertNotClosed();
+    this.#logger.debug('updateIceServers()');
 
-    const configuration = this._pc!.getConfiguration();
+    const configuration = this.#pc!.getConfiguration();
 
     configuration.iceServers = iceServers;
-    this._pc!.setConfiguration(configuration);
+    this.#pc!.setConfiguration(configuration);
   }
 
   async restartIce(iceParameters: IceParameters): Promise<void>
   {
-    this._assertNotClosed();
-    logger.debug('restartIce()');
+    this.#assertNotClosed();
+    this.#logger.debug('restartIce()');
 
-    this._remoteSdp!.updateIceParameters(iceParameters);
+    this.#remoteSdp!.updateIceParameters(iceParameters);
 
-    if (!this._transportReady)
+    if (!this.#transportReady)
       return;
 
-    if (this._direction === 'send')
+    if (this.#direction === 'send')
     {
-      const offer = await this._pc!.createOffer({ iceRestart: true });
+      const offer = await this.#pc!.createOffer({ iceRestart: true });
 
-      logger.debug('restartIce() | calling pc.setLocalDescription() [offer:%o]', offer);
-      await this._pc!.setLocalDescription(offer);
+      this.#logger.debug('restartIce() | calling pc.setLocalDescription() [offer:%o]', offer);
+      await this.#pc!.setLocalDescription(offer);
 
-      const answer = { type: 'answer' as const, sdp: this._remoteSdp!.getSdp() };
+      const answer = { type: 'answer' as const, sdp: this.#remoteSdp!.getSdp() };
 
-      logger.debug('restartIce() | calling pc.setRemoteDescription() [answer:%o]', answer);
-      await this._pc!.setRemoteDescription(answer);
+      this.#logger.debug('restartIce() | calling pc.setRemoteDescription() [answer:%o]', answer);
+      await this.#pc!.setRemoteDescription(answer);
     }
     else
     {
-      const offer = { type: 'offer' as const, sdp: this._remoteSdp!.getSdp() };
+      const offer = { type: 'offer' as const, sdp: this.#remoteSdp!.getSdp() };
 
-      logger.debug('restartIce() | calling pc.setRemoteDescription() [offer:%o]', offer);
-      await this._pc!.setRemoteDescription(offer);
+      this.#logger.debug('restartIce() | calling pc.setRemoteDescription() [offer:%o]', offer);
+      await this.#pc!.setRemoteDescription(offer);
 
-      const answer = await this._pc!.createAnswer();
+      const answer = await this.#pc!.createAnswer();
 
-      logger.debug('restartIce() | calling pc.setLocalDescription() [answer:%o]', answer);
-      await this._pc!.setLocalDescription(answer);
+      this.#logger.debug('restartIce() | calling pc.setLocalDescription() [answer:%o]', answer);
+      await this.#pc!.setLocalDescription(answer);
     }
   }
 
   async getTransportStats(): Promise<RTCStatsReport>
   {
-    this._assertNotClosed();
-    return this._pc!.getStats();
+    this.#assertNotClosed();
+    return this.#pc!.getStats();
   }
 
   async send({
@@ -235,10 +334,10 @@ class WrtcHandler
     onRtpSender,
   }: HandlerSendOptions): Promise<HandlerSendResult>
   {
-    this._assertNotClosed();
-    this._assertSendDirection();
+    this.#assertNotClosed();
+    this.#assertSendDirection();
 
-    logger.debug('send() [kind:%s, track.id:%s, streamId:%s]', track.kind, track.id, streamId);
+    this.#logger.debug('send() [kind:%s, track.id:%s, streamId:%s]', track.kind, track.id, streamId);
 
     if (encodings && encodings.length > 1)
     {
@@ -248,21 +347,21 @@ class WrtcHandler
       });
     }
 
-    const mediaSectionIdx = this._remoteSdp!.getNextMediaSectionIdx();
-    const transceiver = this._pc!.addTransceiver(track, {
+    const mediaSectionIdx = this.#remoteSdp!.getNextMediaSectionIdx();
+    const transceiver = this.#pc!.addTransceiver(track, {
       direction: 'sendonly',
-      streams: [ this._sendStream! ],
+      streams: [ this.#sendStream! ],
       sendEncodings: encodings,
     });
 
     if (onRtpSender)
       onRtpSender(transceiver.sender);
 
-    let offer = await this._pc!.createOffer();
+    let offer = await this.#pc!.createOffer();
     let localSdpObject = sdpTransform.parse(offer.sdp!);
 
     if ((localSdpObject as any).extmapAllowMixed)
-      this._remoteSdp!.setSessionExtmapAllowMixed();
+      this.#remoteSdp!.setSessionExtmapAllowMixed();
 
     const extraHeaderExtensions = [
       {
@@ -275,7 +374,7 @@ class WrtcHandler
     const nativeRtpCapabilities =
       WrtcHandler.getLocalRtpCapabilities(localSdpObject, extraHeaderExtensions);
     const sendExtendedRtpCapabilities =
-      this._getSendExtendedRtpCapabilities!(nativeRtpCapabilities);
+      this.#getSendExtendedRtpCapabilitiesCb!(nativeRtpCapabilities);
 
     const sendingRtpParameters =
       ortc.getSendingRtpParameters(track.kind as MediaKind, sendExtendedRtpCapabilities);
@@ -288,10 +387,10 @@ class WrtcHandler
     sendingRemoteRtpParameters.codecs =
       ortc.reduceCodecs(sendingRemoteRtpParameters.codecs, codec);
 
-    if (!this._transportReady)
+    if (!this.#transportReady)
     {
-      await this._setupTransport({
-        localDtlsRole: this._forcedLocalDtlsRole ?? 'client',
+      await this.#setupTransport({
+        localDtlsRole: this.#forcedLocalDtlsRole ?? 'client',
         localSdpObject,
       });
     }
@@ -306,7 +405,7 @@ class WrtcHandler
       sendingRtpParameters.codecs[0].mimeType.toLowerCase() === 'video/vp9'
     )
     {
-      logger.debug('send() | enabling legacy simulcast for VP9 SVC');
+      this.#logger.debug('send() | enabling legacy simulcast for VP9 SVC');
       hackVp9Svc = true;
       localSdpObject = sdpTransform.parse(offer.sdp!);
       offerMediaObject = (localSdpObject as any).media[mediaSectionIdx.idx];
@@ -332,18 +431,18 @@ class WrtcHandler
       offer = { type: 'offer', sdp: sdpTransform.write(localSdpObject) };
     }
 
-    logger.debug('send() | calling pc.setLocalDescription() [offer:%o]', offer);
-    await this._pc!.setLocalDescription(offer);
+    this.#logger.debug('send() | calling pc.setLocalDescription() [offer:%o]', offer);
+    await this.#pc!.setLocalDescription(offer);
 
     let localId: string | undefined = transceiver.mid ?? undefined;
 
     sendingRtpParameters.mid = localId;
 
-    localSdpObject = sdpTransform.parse(this._pc!.localDescription!.sdp);
+    localSdpObject = sdpTransform.parse(this.#pc!.localDescription!.sdp);
     offerMediaObject = (localSdpObject as any).media[mediaSectionIdx.idx];
 
     sendingRtpParameters.rtcp!.cname = sdpCommonUtils.getCname({ offerMediaObject });
-    sendingRtpParameters.msid = `${streamId ?? this._sendStream!.id} ${track.id}`;
+    sendingRtpParameters.msid = `${streamId ?? this.#sendStream!.id} ${track.id}`;
 
     if (!encodings)
     {
@@ -385,7 +484,7 @@ class WrtcHandler
       }
     }
 
-    this._remoteSdp!.send({
+    this.#remoteSdp!.send({
       offerMediaObject,
       reuseMid: mediaSectionIdx.reuseMid,
       offerRtpParameters: sendingRtpParameters,
@@ -393,10 +492,10 @@ class WrtcHandler
       codecOptions,
     });
 
-    const answer = { type: 'answer' as const, sdp: this._remoteSdp!.getSdp() };
+    const answer = { type: 'answer' as const, sdp: this.#remoteSdp!.getSdp() };
 
-    logger.debug('send() | calling pc.setRemoteDescription() [answer:%o]', answer);
-    await this._pc!.setRemoteDescription(answer);
+    this.#logger.debug('send() | calling pc.setRemoteDescription() [answer:%o]', answer);
+    await this.#pc!.setRemoteDescription(answer);
 
     if (!localId)
     {
@@ -404,7 +503,7 @@ class WrtcHandler
       sendingRtpParameters.mid = localId;
     }
 
-    this._mapMidTransceiver.set(localId, transceiver);
+    this.#mapMidTransceiver.set(localId, transceiver);
 
     return {
       localId,
@@ -415,22 +514,22 @@ class WrtcHandler
 
   async stopSending(localId: string): Promise<void>
   {
-    this._assertSendDirection();
+    this.#assertSendDirection();
 
-    if (this._closed)
+    if (this.#closed)
       return;
 
-    logger.debug('stopSending() [localId:%s]', localId);
+    this.#logger.debug('stopSending() [localId:%s]', localId);
 
-    const transceiver = this._mapMidTransceiver.get(localId);
+    const transceiver = this.#mapMidTransceiver.get(localId);
 
     if (!transceiver)
       throw new Error('associated RTCRtpTransceiver not found');
 
     void transceiver.sender.replaceTrack(null);
-    this._pc!.removeTrack(transceiver.sender);
+    this.#pc!.removeTrack(transceiver.sender);
 
-    const mediaSectionClosed = this._remoteSdp!.closeMediaSection(transceiver.mid!);
+    const mediaSectionClosed = this.#remoteSdp!.closeMediaSection(transceiver.mid!);
 
     if (mediaSectionClosed)
     {
@@ -441,70 +540,70 @@ class WrtcHandler
       catch (error) { /* ignore */ }
     }
 
-    const offer = await this._pc!.createOffer();
+    const offer = await this.#pc!.createOffer();
 
-    logger.debug('stopSending() | calling pc.setLocalDescription() [offer:%o]', offer);
-    await this._pc!.setLocalDescription(offer);
+    this.#logger.debug('stopSending() | calling pc.setLocalDescription() [offer:%o]', offer);
+    await this.#pc!.setLocalDescription(offer);
 
-    const answer = { type: 'answer' as const, sdp: this._remoteSdp!.getSdp() };
+    const answer = { type: 'answer' as const, sdp: this.#remoteSdp!.getSdp() };
 
-    logger.debug('stopSending() | calling pc.setRemoteDescription() [answer:%o]', answer);
-    await this._pc!.setRemoteDescription(answer);
+    this.#logger.debug('stopSending() | calling pc.setRemoteDescription() [answer:%o]', answer);
+    await this.#pc!.setRemoteDescription(answer);
 
-    this._mapMidTransceiver.delete(localId);
+    this.#mapMidTransceiver.delete(localId);
   }
 
   async pauseSending(localId: string): Promise<void>
   {
-    this._assertNotClosed();
-    this._assertSendDirection();
+    this.#assertNotClosed();
+    this.#assertSendDirection();
 
-    logger.debug('pauseSending() [localId:%s]', localId);
+    this.#logger.debug('pauseSending() [localId:%s]', localId);
 
-    const transceiver = this._mapMidTransceiver.get(localId);
+    const transceiver = this.#mapMidTransceiver.get(localId);
 
     if (!transceiver)
       throw new Error('associated RTCRtpTransceiver not found');
 
     transceiver.direction = 'inactive';
-    this._remoteSdp!.pauseMediaSection(localId);
+    this.#remoteSdp!.pauseMediaSection(localId);
 
-    const offer = await this._pc!.createOffer();
+    const offer = await this.#pc!.createOffer();
 
-    logger.debug('pauseSending() | calling pc.setLocalDescription() [offer:%o]', offer);
-    await this._pc!.setLocalDescription(offer);
+    this.#logger.debug('pauseSending() | calling pc.setLocalDescription() [offer:%o]', offer);
+    await this.#pc!.setLocalDescription(offer);
 
-    const answer = { type: 'answer' as const, sdp: this._remoteSdp!.getSdp() };
+    const answer = { type: 'answer' as const, sdp: this.#remoteSdp!.getSdp() };
 
-    logger.debug('pauseSending() | calling pc.setRemoteDescription() [answer:%o]', answer);
-    await this._pc!.setRemoteDescription(answer);
+    this.#logger.debug('pauseSending() | calling pc.setRemoteDescription() [answer:%o]', answer);
+    await this.#pc!.setRemoteDescription(answer);
   }
 
   async resumeSending(localId: string): Promise<void>
   {
-    this._assertNotClosed();
-    this._assertSendDirection();
+    this.#assertNotClosed();
+    this.#assertSendDirection();
 
-    logger.debug('resumeSending() [localId:%s]', localId);
+    this.#logger.debug('resumeSending() [localId:%s]', localId);
 
-    const transceiver = this._mapMidTransceiver.get(localId);
+    const transceiver = this.#mapMidTransceiver.get(localId);
 
-    this._remoteSdp!.resumeSendingMediaSection(localId);
+    this.#remoteSdp!.resumeSendingMediaSection(localId);
 
     if (!transceiver)
       throw new Error('associated RTCRtpTransceiver not found');
 
     transceiver.direction = 'sendonly';
 
-    const offer = await this._pc!.createOffer();
+    const offer = await this.#pc!.createOffer();
 
-    logger.debug('resumeSending() | calling pc.setLocalDescription() [offer:%o]', offer);
-    await this._pc!.setLocalDescription(offer);
+    this.#logger.debug('resumeSending() | calling pc.setLocalDescription() [offer:%o]', offer);
+    await this.#pc!.setLocalDescription(offer);
 
-    const answer = { type: 'answer' as const, sdp: this._remoteSdp!.getSdp() };
+    const answer = { type: 'answer' as const, sdp: this.#remoteSdp!.getSdp() };
 
-    logger.debug('resumeSending() | calling pc.setRemoteDescription() [answer:%o]', answer);
-    await this._pc!.setRemoteDescription(answer);
+    this.#logger.debug('resumeSending() | calling pc.setRemoteDescription() [answer:%o]', answer);
+    await this.#pc!.setRemoteDescription(answer);
   }
 
   async replaceTrack(
@@ -512,15 +611,15 @@ class WrtcHandler
     track: MediaStreamTrack | null
   ): Promise<void>
   {
-    this._assertNotClosed();
-    this._assertSendDirection();
+    this.#assertNotClosed();
+    this.#assertSendDirection();
 
     if (track)
-      logger.debug('replaceTrack() [localId:%s, track.id:%s]', localId, track.id);
+      this.#logger.debug('replaceTrack() [localId:%s, track.id:%s]', localId, track.id);
     else
-      logger.debug('replaceTrack() [localId:%s, no track]', localId);
+      this.#logger.debug('replaceTrack() [localId:%s, no track]', localId);
 
-    const transceiver = this._mapMidTransceiver.get(localId);
+    const transceiver = this.#mapMidTransceiver.get(localId);
 
     if (!transceiver)
       throw new Error('associated RTCRtpTransceiver not found');
@@ -530,16 +629,16 @@ class WrtcHandler
 
   async setMaxSpatialLayer(localId: string, spatialLayer: number): Promise<void>
   {
-    this._assertNotClosed();
-    this._assertSendDirection();
+    this.#assertNotClosed();
+    this.#assertSendDirection();
 
-    logger.debug(
+    this.#logger.debug(
       'setMaxSpatialLayer() [localId:%s, spatialLayer:%s]',
       localId,
       spatialLayer
     );
 
-    const transceiver = this._mapMidTransceiver.get(localId);
+    const transceiver = this.#mapMidTransceiver.get(localId);
 
     if (!transceiver)
       throw new Error('associated RTCRtpTransceiver not found');
@@ -552,23 +651,23 @@ class WrtcHandler
     });
 
     await transceiver.sender.setParameters(parameters);
-    this._remoteSdp!.muxMediaSectionSimulcast(localId, parameters.encodings);
+    this.#remoteSdp!.muxMediaSectionSimulcast(localId, parameters.encodings);
 
-    const offer = await this._pc!.createOffer();
+    const offer = await this.#pc!.createOffer();
 
-    logger.debug(
+    this.#logger.debug(
       'setMaxSpatialLayer() | calling pc.setLocalDescription() [offer:%o]',
       offer
     );
-    await this._pc!.setLocalDescription(offer);
+    await this.#pc!.setLocalDescription(offer);
 
-    const answer = { type: 'answer' as const, sdp: this._remoteSdp!.getSdp() };
+    const answer = { type: 'answer' as const, sdp: this.#remoteSdp!.getSdp() };
 
-    logger.debug(
+    this.#logger.debug(
       'setMaxSpatialLayer() | calling pc.setRemoteDescription() [answer:%o]',
       answer
     );
-    await this._pc!.setRemoteDescription(answer);
+    await this.#pc!.setRemoteDescription(answer);
   }
 
   async setRtpEncodingParameters(
@@ -576,16 +675,16 @@ class WrtcHandler
     params: Partial<RTCRtpEncodingParameters>
   ): Promise<void>
   {
-    this._assertNotClosed();
-    this._assertSendDirection();
+    this.#assertNotClosed();
+    this.#assertSendDirection();
 
-    logger.debug(
+    this.#logger.debug(
       'setRtpEncodingParameters() [localId:%s, params:%o]',
       localId,
       params
     );
 
-    const transceiver = this._mapMidTransceiver.get(localId);
+    const transceiver = this.#mapMidTransceiver.get(localId);
 
     if (!transceiver)
       throw new Error('associated RTCRtpTransceiver not found');
@@ -598,31 +697,31 @@ class WrtcHandler
     });
 
     await transceiver.sender.setParameters(parameters);
-    this._remoteSdp!.muxMediaSectionSimulcast(localId, parameters.encodings);
+    this.#remoteSdp!.muxMediaSectionSimulcast(localId, parameters.encodings);
 
-    const offer = await this._pc!.createOffer();
+    const offer = await this.#pc!.createOffer();
 
-    logger.debug(
+    this.#logger.debug(
       'setRtpEncodingParameters() | calling pc.setLocalDescription() [offer:%o]',
       offer
     );
-    await this._pc!.setLocalDescription(offer);
+    await this.#pc!.setLocalDescription(offer);
 
-    const answer = { type: 'answer' as const, sdp: this._remoteSdp!.getSdp() };
+    const answer = { type: 'answer' as const, sdp: this.#remoteSdp!.getSdp() };
 
-    logger.debug(
+    this.#logger.debug(
       'setRtpEncodingParameters() | calling pc.setRemoteDescription() [answer:%o]',
       answer
     );
-    await this._pc!.setRemoteDescription(answer);
+    await this.#pc!.setRemoteDescription(answer);
   }
 
   async getSenderStats(localId: string): Promise<RTCStatsReport>
   {
-    this._assertNotClosed();
-    this._assertSendDirection();
+    this.#assertNotClosed();
+    this.#assertSendDirection();
 
-    const transceiver = this._mapMidTransceiver.get(localId);
+    const transceiver = this.#mapMidTransceiver.get(localId);
 
     if (!transceiver)
       throw new Error('associated RTCRtpTransceiver not found');
@@ -634,61 +733,61 @@ class WrtcHandler
     sctpStreamParameters,
   }: HandlerSendDataChannelOptions): Promise<HandlerSendDataChannelResult>
   {
-    this._assertNotClosed();
-    this._assertSendDirection();
+    this.#assertNotClosed();
+    this.#assertSendDirection();
 
     const options = {
       negotiated: true,
-      id: this._nextSendSctpStreamId,
+      id: this.#nextSendSctpStreamId,
       ordered: sctpStreamParameters.ordered,
       maxPacketLifeTime: sctpStreamParameters.maxPacketLifeTime,
       maxRetransmits: sctpStreamParameters.maxRetransmits,
       protocol: sctpStreamParameters.protocol,
     };
 
-    logger.debug('sendDataChannel() [options:%o]', options);
+    this.#logger.debug('sendDataChannel() [options:%o]', options);
 
-    const dataChannel = this._pc!.createDataChannel(
+    const dataChannel = this.#pc!.createDataChannel(
       sctpStreamParameters.label ?? '',
       options
     );
 
-    this._nextSendSctpStreamId =
-      ++this._nextSendSctpStreamId % SCTP_NUM_STREAMS.MIS;
+    this.#nextSendSctpStreamId =
+      ++this.#nextSendSctpStreamId % SCTP_NUM_STREAMS.MIS;
 
-    if (!this._hasDataChannelMediaSection)
+    if (!this.#hasDataChannelMediaSection)
     {
-      const offer = await this._pc!.createOffer();
+      const offer = await this.#pc!.createOffer();
       const localSdpObject = sdpTransform.parse(offer.sdp!);
       const offerMediaObject = (localSdpObject as any).media.find(
         (m: any) => m.type === 'application'
       );
 
-      if (!this._transportReady)
+      if (!this.#transportReady)
       {
-        await this._setupTransport({
-          localDtlsRole: this._forcedLocalDtlsRole ?? 'client',
+        await this.#setupTransport({
+          localDtlsRole: this.#forcedLocalDtlsRole ?? 'client',
           localSdpObject,
         });
       }
 
-      logger.debug(
+      this.#logger.debug(
         'sendDataChannel() | calling pc.setLocalDescription() [offer:%o]',
         offer
       );
-      await this._pc!.setLocalDescription(offer);
+      await this.#pc!.setLocalDescription(offer);
 
-      this._remoteSdp!.sendSctpAssociation({ offerMediaObject });
+      this.#remoteSdp!.sendSctpAssociation({ offerMediaObject });
 
-      const answer = { type: 'answer' as const, sdp: this._remoteSdp!.getSdp() };
+      const answer = { type: 'answer' as const, sdp: this.#remoteSdp!.getSdp() };
 
-      logger.debug(
+      this.#logger.debug(
         'sendDataChannel() | calling pc.setRemoteDescription() [answer:%o]',
         answer
       );
-      await this._pc!.setRemoteDescription(answer);
+      await this.#pc!.setRemoteDescription(answer);
 
-      this._hasDataChannelMediaSection = true;
+      this.#hasDataChannelMediaSection = true;
     }
 
     const newSctpStreamParameters = {
@@ -703,8 +802,8 @@ class WrtcHandler
 
   async receive(optionsList: HandlerReceiveOptions[]): Promise<HandlerReceiveResult[]>
   {
-    this._assertNotClosed();
-    this._assertRecvDirection();
+    this.#assertNotClosed();
+    this.#assertRecvDirection();
 
     const results: HandlerReceiveResult[] = [];
     const mapLocalId = new Map<string, string>();
@@ -713,17 +812,17 @@ class WrtcHandler
     {
       const { trackId, kind, rtpParameters, streamId } = options;
 
-      logger.debug('receive() [trackId:%s, kind:%s]', trackId, kind);
+      this.#logger.debug('receive() [trackId:%s, kind:%s]', trackId, kind);
 
       const localId =
-        rtpParameters.mid ?? String(this._mapMidTransceiver.size);
+        rtpParameters.mid ?? String(this.#mapMidTransceiver.size);
 
       mapLocalId.set(trackId, localId);
 
       const { msidStreamId } =
         ortcUtils.getMsidStreamIdAndTrackId(rtpParameters.msid);
 
-      this._remoteSdp!.receive({
+      this.#remoteSdp!.receive({
         mid: localId,
         kind,
         offerRtpParameters: rtpParameters,
@@ -732,10 +831,10 @@ class WrtcHandler
       });
     }
 
-    const offer = { type: 'offer' as const, sdp: this._remoteSdp!.getSdp() };
+    const offer = { type: 'offer' as const, sdp: this.#remoteSdp!.getSdp() };
 
-    logger.debug('receive() | calling pc.setRemoteDescription() [offer:%o]', offer);
-    await this._pc!.setRemoteDescription(offer);
+    this.#logger.debug('receive() | calling pc.setRemoteDescription() [offer:%o]', offer);
+    await this.#pc!.setRemoteDescription(offer);
 
     for (const options of optionsList)
     {
@@ -744,7 +843,7 @@ class WrtcHandler
       if (onRtpReceiver)
       {
         const localId = mapLocalId.get(trackId)!;
-        const transceiver = this._pc!
+        const transceiver = this.#pc!
           .getTransceivers()
           .find((t) => t.mid === localId);
 
@@ -755,7 +854,7 @@ class WrtcHandler
       }
     }
 
-    let answer = await this._pc!.createAnswer();
+    let answer = await this.#pc!.createAnswer();
     const localSdpObject = sdpTransform.parse(answer.sdp!);
 
     for (const options of optionsList)
@@ -777,29 +876,29 @@ class WrtcHandler
       sdp: sdpTransform.write(localSdpObject),
     };
 
-    if (!this._transportReady)
+    if (!this.#transportReady)
     {
-      await this._setupTransport({
-        localDtlsRole: this._forcedLocalDtlsRole ?? 'client',
+      await this.#setupTransport({
+        localDtlsRole: this.#forcedLocalDtlsRole ?? 'client',
         localSdpObject,
       });
     }
 
-    logger.debug('receive() | calling pc.setLocalDescription() [answer:%o]', answer);
-    await this._pc!.setLocalDescription(answer);
+    this.#logger.debug('receive() | calling pc.setLocalDescription() [answer:%o]', answer);
+    await this.#pc!.setLocalDescription(answer);
 
     for (const options of optionsList)
     {
       const { trackId } = options;
       const localId = mapLocalId.get(trackId)!;
-      const transceiver = this._pc!
+      const transceiver = this.#pc!
         .getTransceivers()
         .find((t) => t.mid === localId);
 
       if (!transceiver)
         throw new Error('new RTCRtpTransceiver not found');
 
-      this._mapMidTransceiver.set(localId, transceiver);
+      this.#mapMidTransceiver.set(localId, transceiver);
       results.push({
         localId,
         track: transceiver.receiver.track,
@@ -812,119 +911,119 @@ class WrtcHandler
 
   async stopReceiving(localIds: string[]): Promise<void>
   {
-    this._assertRecvDirection();
+    this.#assertRecvDirection();
 
-    if (this._closed)
+    if (this.#closed)
       return;
 
     for (const localId of localIds)
     {
-      logger.debug('stopReceiving() [localId:%s]', localId);
+      this.#logger.debug('stopReceiving() [localId:%s]', localId);
 
-      const transceiver = this._mapMidTransceiver.get(localId);
+      const transceiver = this.#mapMidTransceiver.get(localId);
 
       if (!transceiver)
         throw new Error('associated RTCRtpTransceiver not found');
 
-      this._remoteSdp!.closeMediaSection(transceiver.mid!);
+      this.#remoteSdp!.closeMediaSection(transceiver.mid!);
     }
 
-    const offer = { type: 'offer' as const, sdp: this._remoteSdp!.getSdp() };
+    const offer = { type: 'offer' as const, sdp: this.#remoteSdp!.getSdp() };
 
-    logger.debug(
+    this.#logger.debug(
       'stopReceiving() | calling pc.setRemoteDescription() [offer:%o]',
       offer
     );
-    await this._pc!.setRemoteDescription(offer);
+    await this.#pc!.setRemoteDescription(offer);
 
-    const answer = await this._pc!.createAnswer();
+    const answer = await this.#pc!.createAnswer();
 
-    logger.debug(
+    this.#logger.debug(
       'stopReceiving() | calling pc.setLocalDescription() [answer:%o]',
       answer
     );
-    await this._pc!.setLocalDescription(answer);
+    await this.#pc!.setLocalDescription(answer);
 
     for (const localId of localIds)
-      this._mapMidTransceiver.delete(localId);
+      this.#mapMidTransceiver.delete(localId);
   }
 
   async pauseReceiving(localIds: string[]): Promise<void>
   {
-    this._assertNotClosed();
-    this._assertRecvDirection();
+    this.#assertNotClosed();
+    this.#assertRecvDirection();
 
     for (const localId of localIds)
     {
-      logger.debug('pauseReceiving() [localId:%s]', localId);
+      this.#logger.debug('pauseReceiving() [localId:%s]', localId);
 
-      const transceiver = this._mapMidTransceiver.get(localId);
+      const transceiver = this.#mapMidTransceiver.get(localId);
 
       if (!transceiver)
         throw new Error('associated RTCRtpTransceiver not found');
 
       transceiver.direction = 'inactive';
-      this._remoteSdp!.pauseMediaSection(localId);
+      this.#remoteSdp!.pauseMediaSection(localId);
     }
 
-    const offer = { type: 'offer' as const, sdp: this._remoteSdp!.getSdp() };
+    const offer = { type: 'offer' as const, sdp: this.#remoteSdp!.getSdp() };
 
-    logger.debug(
+    this.#logger.debug(
       'pauseReceiving() | calling pc.setRemoteDescription() [offer:%o]',
       offer
     );
-    await this._pc!.setRemoteDescription(offer);
+    await this.#pc!.setRemoteDescription(offer);
 
-    const answer = await this._pc!.createAnswer();
+    const answer = await this.#pc!.createAnswer();
 
-    logger.debug(
+    this.#logger.debug(
       'pauseReceiving() | calling pc.setLocalDescription() [answer:%o]',
       answer
     );
-    await this._pc!.setLocalDescription(answer);
+    await this.#pc!.setLocalDescription(answer);
   }
 
   async resumeReceiving(localIds: string[]): Promise<void>
   {
-    this._assertNotClosed();
-    this._assertRecvDirection();
+    this.#assertNotClosed();
+    this.#assertRecvDirection();
 
     for (const localId of localIds)
     {
-      logger.debug('resumeReceiving() [localId:%s]', localId);
+      this.#logger.debug('resumeReceiving() [localId:%s]', localId);
 
-      const transceiver = this._mapMidTransceiver.get(localId);
+      const transceiver = this.#mapMidTransceiver.get(localId);
 
       if (!transceiver)
         throw new Error('associated RTCRtpTransceiver not found');
 
       transceiver.direction = 'recvonly';
-      this._remoteSdp!.resumeReceivingMediaSection(localId);
+      this.#remoteSdp!.resumeReceivingMediaSection(localId);
     }
 
-    const offer = { type: 'offer' as const, sdp: this._remoteSdp!.getSdp() };
+    const offer = { type: 'offer' as const, sdp: this.#remoteSdp!.getSdp() };
 
-    logger.debug(
+    this.#logger.debug(
       'resumeReceiving() | calling pc.setRemoteDescription() [offer:%o]',
       offer
     );
-    await this._pc!.setRemoteDescription(offer);
+    await this.#pc!.setRemoteDescription(offer);
 
-    const answer = await this._pc!.createAnswer();
+    const answer = await this.#pc!.createAnswer();
 
-    logger.debug(
+    this.#logger.debug(
       'resumeReceiving() | calling pc.setLocalDescription() [answer:%o]',
       answer
     );
-    await this._pc!.setLocalDescription(answer);
+    await this.#pc!.setLocalDescription(answer);
   }
 
   async getReceiverStats(localId: string): Promise<RTCStatsReport>
   {
-    this._assertNotClosed();
-    this._assertRecvDirection();
+    this.#assertNotClosed();
+    this.#assertRecvDirection();
 
-    const transceiver = this._mapMidTransceiver.get(localId);
+    const transceiver = this.#mapMidTransceiver.get(localId);
 
     if (!transceiver)
       throw new Error('associated RTCRtpTransceiver not found');
@@ -939,8 +1038,8 @@ class WrtcHandler
     protocol,
   }: HandlerReceiveDataChannelOptions): Promise<HandlerReceiveDataChannelResult>
   {
-    this._assertNotClosed();
-    this._assertRecvDirection();
+    this.#assertNotClosed();
+    this.#assertRecvDirection();
 
     const {
       streamId,
@@ -958,23 +1057,23 @@ class WrtcHandler
       protocol,
     };
 
-    logger.debug('receiveDataChannel() [options:%o]', options);
+    this.#logger.debug('receiveDataChannel() [options:%o]', options);
 
-    const dataChannel = this._pc!.createDataChannel(label ?? '', options);
+    const dataChannel = this.#pc!.createDataChannel(label ?? '', options);
 
-    if (!this._hasDataChannelMediaSection)
+    if (!this.#hasDataChannelMediaSection)
     {
-      this._remoteSdp!.receiveSctpAssociation();
+      this.#remoteSdp!.receiveSctpAssociation();
 
-      const offer = { type: 'offer' as const, sdp: this._remoteSdp!.getSdp() };
+      const offer = { type: 'offer' as const, sdp: this.#remoteSdp!.getSdp() };
 
-      logger.debug(
+      this.#logger.debug(
         'receiveDataChannel() | calling pc.setRemoteDescription() [offer:%o]',
         offer
       );
-      await this._pc!.setRemoteDescription(offer);
+      await this.#pc!.setRemoteDescription(offer);
 
-      let answer = await this._pc!.createAnswer();
+      let answer = await this.#pc!.createAnswer();
       const localSdpObject = sdpTransform.parse(answer.sdp!);
       const answerMediaObject = (localSdpObject as any).media.find(
         (m: any) => m.type === 'application'
@@ -982,23 +1081,23 @@ class WrtcHandler
 
       answerMediaObject.maxMessageSize = maxMessageSize;
 
-      if (!this._transportReady)
+      if (!this.#transportReady)
       {
-        await this._setupTransport({
-          localDtlsRole: this._forcedLocalDtlsRole ?? 'client',
+        await this.#setupTransport({
+          localDtlsRole: this.#forcedLocalDtlsRole ?? 'client',
           localSdpObject,
         });
       }
 
       answer = { type: 'answer', sdp: sdpTransform.write(localSdpObject) };
 
-      logger.debug(
+      this.#logger.debug(
         'receiveDataChannel() | calling pc.setLocalDescription() [answer:%o]',
         answer
       );
-      await this._pc!.setLocalDescription(answer);
+      await this.#pc!.setLocalDescription(answer);
 
-      this._hasDataChannelMediaSection = true;
+      this.#hasDataChannelMediaSection = true;
     }
 
     return { dataChannel };
@@ -1006,10 +1105,10 @@ class WrtcHandler
 
   getDataChannelMaxMessageSize(): number | undefined
   {
-    return this._pc!.sctp?.maxMessageSize;
+    return this.#pc!.sctp?.maxMessageSize;
   }
 
-  private async _setupTransport({
+  async #setupTransport({
     localDtlsRole,
     localSdpObject,
   }: {
@@ -1018,14 +1117,14 @@ class WrtcHandler
   }): Promise<void>
   {
     if (!localSdpObject)
-      localSdpObject = sdpTransform.parse(this._pc!.localDescription!.sdp);
+      localSdpObject = sdpTransform.parse(this.#pc!.localDescription!.sdp);
 
     const dtlsParameters = sdpCommonUtils.extractDtlsParameters({
       sdpObject: localSdpObject,
     });
 
     dtlsParameters.role = localDtlsRole;
-    this._remoteSdp!.updateDtlsRole(
+    this.#remoteSdp!.updateDtlsRole(
       (localDtlsRole === 'client' ? 'server' : 'client') as DtlsRole
     );
 
@@ -1034,27 +1133,27 @@ class WrtcHandler
       this.safeEmit('@connect', { dtlsParameters }, resolve, reject);
     });
 
-    this._transportReady = true;
+    this.#transportReady = true;
   }
 
-  private readonly _onIceGatheringStateChange = (): void =>
+  readonly #onIceGatheringStateChange = (): void =>
   {
-    this.emit('@icegatheringstatechange', this._pc!.iceGatheringState);
+    this.emit('@icegatheringstatechange', this.#pc!.iceGatheringState);
   };
 
-  private readonly _onIceCandidateError = (event: Event): void =>
+  readonly #onIceCandidateError = (event: Event): void =>
   {
     this.emit('@icecandidateerror', event as RTCPeerConnectionIceErrorEvent);
   };
 
-  private readonly _onConnectionStateChange = (): void =>
+  readonly #onConnectionStateChange = (): void =>
   {
-    this.emit('@connectionstatechange', this._pc!.connectionState);
+    this.emit('@connectionstatechange', this.#pc!.connectionState);
   };
 
-  private readonly _onIceConnectionStateChange = (): void =>
+  readonly #onIceConnectionStateChange = (): void =>
   {
-    switch (this._pc!.iceConnectionState)
+    switch (this.#pc!.iceConnectionState)
     {
       case 'checking':
         this.emit('@connectionstatechange', 'connecting');
@@ -1079,86 +1178,27 @@ class WrtcHandler
     }
   };
 
-  private _assertNotClosed(): void
+  #assertNotClosed(): void
   {
-    if (this._closed)
+    if (this.#closed)
       throw new InvalidStateError('method called in a closed handler');
   }
 
-  private _assertSendDirection(): void
+  #assertSendDirection(): void
   {
-    if (this._direction !== 'send')
+    if (this.#direction !== 'send')
       throw new Error(
         'method can just be called for handlers with "send" direction'
       );
   }
 
-  private _assertRecvDirection(): void
+  #assertRecvDirection(): void
   {
-    if (this._direction !== 'recv')
+    if (this.#direction !== 'recv')
       throw new Error(
         'method can just be called for handlers with "recv" direction'
       );
   }
 }
 
-
-export function createHandlerFactory(wrtc: WrtcLike): HandlerFactory
-{
-  function factory(options: HandlerOptions): HandlerInterface
-  {
-    return new WrtcHandler(wrtc, options);
-  }
-
-  async function getNativeRtpCapabilities(
-    {direction}: HandlerGetNativeRtpCapabilitiesOptions
-  ): Promise<RtpCapabilities>
-  {
-    logger.debug('getNativeRtpCapabilities() [direction:%o]', direction);
-
-    let pc: RTCPeerConnection | undefined = new wrtc.RTCPeerConnection({
-      iceServers: [],
-      iceTransportPolicy: 'all',
-      bundlePolicy: 'max-bundle',
-      rtcpMuxPolicy: 'require',
-    });
-
-    try
-    {
-      pc.addTransceiver('audio', { direction });
-      pc.addTransceiver('video', { direction });
-
-      const offer = await pc.createOffer();
-
-      try { pc.close(); } catch (error) { /* ignore */ }
-      pc = undefined;
-
-      const sdpObject = sdpTransform.parse(offer.sdp!);
-
-      return WrtcHandler.getLocalRtpCapabilities(sdpObject);
-    }
-    catch (error)
-    {
-      try { pc?.close(); } catch (error2) { /* ignore */ }
-      pc = undefined;
-      throw error;
-    }
-  }
-
-  async function getNativeSctpCapabilities()
-  {
-    logger.debug('getNativeSctpCapabilities()');
-
-    return { numStreams: SCTP_NUM_STREAMS };
-  }
-
-  return {
-    name: NAME,
-
-    factory,
-    getNativeRtpCapabilities,
-    getNativeSctpCapabilities
-  };
-}
-
-export default createHandlerFactory;
+export default WrtcHandler;
