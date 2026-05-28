@@ -1,5 +1,3 @@
-import { createRequire } from 'node:module';
-
 import { Device } from 'mediasoup-client';
 import type {
   HandlerFactory,
@@ -7,12 +5,7 @@ import type {
   RtpCapabilities,
 } from 'mediasoup-client/types';
 
-import WrtcHandler from '../index.ts';
-
-
-const require = createRequire(import.meta.url);
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const wrtc = require('@roamhq/wrtc') as typeof import('@roamhq/wrtc');
+import WrtcHandler, { type WrtcLike } from '../index.ts';
 
 
 type LoggerSink = Pick<Console, 'info' | 'warn' | 'error'>;
@@ -24,16 +17,11 @@ type CreateWrtcHandlerFactoryOptions = {
 
 type CreateWrtcDeviceOptions = {
   routerRtpCapabilities: RtpCapabilities;
+  wrtcRuntime?: WrtcLike;
   handlerFactory?: HandlerFactory;
   loggerSink?: LoggerSink;
   probeDirection?: HandlerGetNativeRtpCapabilitiesOptions['direction'];
 };
-
-
-export function getWrtcRuntime(): typeof import('@roamhq/wrtc')
-{
-  return wrtc;
-}
 
 export function createLoggerSink(prefix = '[wrtc-handler]'): LoggerSink
 {
@@ -45,23 +33,30 @@ export function createLoggerSink(prefix = '[wrtc-handler]'): LoggerSink
 }
 
 export function createWrtcHandlerFactory(
+  wrtcRuntime: WrtcLike,
   { loggerSink = createLoggerSink() }: CreateWrtcHandlerFactoryOptions = {}
 ): HandlerFactory
 {
-  return WrtcHandler.createFactory(wrtc, loggerSink);
+  return WrtcHandler.createFactory(wrtcRuntime, loggerSink);
 }
 
 export async function createWrtcDevice(
   {
     routerRtpCapabilities,
+    wrtcRuntime,
     handlerFactory,
     loggerSink,
     probeDirection,
   }: CreateWrtcDeviceOptions,
 )
 {
-  const resolvedHandlerFactory =
-    handlerFactory ?? createWrtcHandlerFactory({ loggerSink });
+  const resolvedHandlerFactory = handlerFactory
+    ?? (wrtcRuntime ? createWrtcHandlerFactory(wrtcRuntime, { loggerSink }) : undefined);
+
+  if (!resolvedHandlerFactory)
+  {
+    throw new TypeError('Either handlerFactory or wrtcRuntime must be provided');
+  }
 
   const nativeRtpCapabilities = probeDirection
     ? await resolvedHandlerFactory.getNativeRtpCapabilities({
@@ -76,6 +71,5 @@ export async function createWrtcDevice(
     device,
     handlerFactory: resolvedHandlerFactory,
     nativeRtpCapabilities,
-    wrtc,
   };
 }

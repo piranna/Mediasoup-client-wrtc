@@ -2,107 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { WrtcHandler } from "../src/index.ts";
-
-const VALID_OFFER_SDP = `v=0
-o=- 0 0 IN IP4 127.0.0.1
-s=-
-t=0 0
-a=group:BUNDLE 0 1
-a=msid-semantic: WMS *
-m=audio 9 UDP/TLS/RTP/SAVPF 111
-c=IN IP4 0.0.0.0
-a=mid:0
-a=sendrecv
-a=rtpmap:111 opus/48000/2
-a=fmtp:111 minptime=10;useinbandfec=1
-a=rtcp-mux
-a=rtcp-rsize
-a=ice-ufrag:test
-a=ice-pwd:testpassword
-a=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff
-a=setup:actpass
-m=video 9 UDP/TLS/RTP/SAVPF 96
-c=IN IP4 0.0.0.0
-a=mid:1
-a=sendrecv
-a=rtpmap:96 VP8/90000
-a=rtcp-mux
-a=rtcp-rsize
-a=ice-ufrag:test
-a=ice-pwd:testpassword
-a=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff
-a=setup:actpass
-`;
-
-class MockRTCPeerConnection {
-  constructor(configuration = {}) {
-    this.configuration = configuration;
-    this.transceivers = [];
-    this.localDescription = undefined;
-    this.closed = false;
-  }
-
-  addEventListener() {}
-
-  removeEventListener() {}
-
-  getConfiguration() {
-    return this.configuration;
-  }
-
-  setConfiguration(configuration) {
-    this.configuration = configuration;
-  }
-
-  addTransceiver(kind, options) {
-    const transceiver = {
-      mid: String(this.transceivers.length),
-      sender: {
-        replaceTrack: async () => {},
-        getParameters: () => ({ encodings: [{}] }),
-        setParameters: async () => {},
-        getStats: async () => new Map(),
-      },
-      receiver: {
-        track: { kind },
-        getStats: async () => new Map(),
-      },
-      stop: () => {},
-      direction: options?.direction ?? "sendrecv",
-    };
-
-    this.transceivers.push(transceiver);
-    return transceiver;
-  }
-
-  async createOffer() {
-    return { type: "offer", sdp: VALID_OFFER_SDP };
-  }
-
-  async createAnswer() {
-    return { type: "answer", sdp: VALID_OFFER_SDP };
-  }
-
-  async setLocalDescription(description) {
-    this.localDescription = description;
-  }
-
-  async setRemoteDescription() {}
-
-  close() {
-    this.closed = true;
-  }
-
-  getStats() {
-    return new Map();
-  }
-}
-
-class MockMediaStream {
-  constructor() {
-    this.id = "mock-stream";
-  }
-}
+import {
+  createMockWrtcRuntime,
+  MockMediaStream,
+  MockRTCPeerConnection,
+} from "./fixtures/mockWrtcRuntime.ts";
 
 class MockRTCPeerConnectionCloseThrows extends MockRTCPeerConnection {
   close() {
@@ -111,8 +15,7 @@ class MockRTCPeerConnectionCloseThrows extends MockRTCPeerConnection {
 }
 
 const wrtc = {
-  RTCPeerConnection: MockRTCPeerConnection,
-  MediaStream: MockMediaStream,
+  ...createMockWrtcRuntime(),
 };
 
 test("WrtcHandler.createFactory exposes the wrtc handler contract", async () => {

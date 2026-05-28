@@ -1,4 +1,4 @@
-type WrtcModule = typeof import('@roamhq/wrtc');
+import type { WrtcRuntimeWithNonstandard } from './webrtcRuntimeTypes.ts';
 
 
 type CreateSyntheticAudioTrackOptions = {
@@ -9,7 +9,7 @@ type CreateSyntheticAudioTrackOptions = {
 
 
 export function createSyntheticAudioTrack(
-  wrtc: WrtcModule,
+  wrtcRuntime: WrtcRuntimeWithNonstandard,
   {
     sampleRate = 48000,
     channelCount = 1,
@@ -17,7 +17,7 @@ export function createSyntheticAudioTrack(
   }: CreateSyntheticAudioTrackOptions = {},
 )
 {
-  const audioSource = new wrtc.nonstandard.RTCAudioSource();
+  const audioSource = new wrtcRuntime.nonstandard.RTCAudioSource();
   const track = audioSource.createTrack();
 
   const numberOfFrames = sampleRate / 100;

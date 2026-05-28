@@ -24,6 +24,8 @@
   },
   "scripts": {
     "build": "tsc",
+    "check": "npm test && npm run check:examples",
+    "check:examples": "node examples/01-load-device.ts && node examples/02-produce-consume-audio-mock.ts && node examples/03-produce-consume-audio-real-mediasoup.ts",
     "prepare": "npm run build",
     "test": "node --experimental-test-coverage --test-coverage-include='src/**/*.ts' --test test/*.test.ts"
   },

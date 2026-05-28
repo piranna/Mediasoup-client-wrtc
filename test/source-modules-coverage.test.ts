@@ -10,6 +10,9 @@ test('all source modules are loadable for full src coverage accounting', async (
     import('../src/testing/createLocalMediasoupServer.ts'),
     import('../src/testing/createSyntheticAudioTrack.ts'),
     import('../src/testing/createWrtcDevice.ts'),
+    import('../src/testing/runtimeModule.ts'),
+    import('../src/testing/runtimeWorkflow.ts'),
+    import('../src/testing/webrtcRuntimeTypes.ts'),
   ]);
 
   for (const mod of modules) {

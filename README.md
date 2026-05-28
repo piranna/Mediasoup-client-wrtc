@@ -1,7 +1,7 @@
 # mediasoup-client-wrtc
 
-mediasoup-client handler for Node.js using WebRTC-compatible implementations
-such as @roamhq/wrtc.
+mediasoup-client handler for Node.js using an injected, WebRTC-compatible
+runtime implementation.
 
 It lets you use mediasoup-client Device outside the browser through a handler
 factory that exposes native RTP/SCTP capabilities and manages transports,
@@ -25,19 +25,24 @@ tracks, and data channels.
   - `RTCPeerConnection`
   - `MediaStream`
 
-Recommended package: @roamhq/wrtc.
+You inject the concrete runtime instance at call time (for example, an external
+`wrtc`-compatible package, but any compatible implementation can be used).
 
 ## Installation
 
 ```sh
-npm install mediasoup-client mediasoup-client-wrtc @roamhq/wrtc
+npm install mediasoup-client mediasoup-client-wrtc
+
+# Install your preferred runtime implementation separately.
+# Example runtime used by the repository examples:
+npm install @roamhq/wrtc
 ```
 
 ## Quick Start
 
 ```js
 import { Device } from "mediasoup-client";
-import * as wrtc from "@roamhq/wrtc";
+import * as wrtc from "your-webrtc-runtime";
 import { WrtcHandler } from "mediasoup-client-wrtc";
 
 const handlerFactory = WrtcHandler.createFactory(wrtc);
@@ -45,6 +50,9 @@ const device = new Device({ handlerFactory });
 
 await device.load({ routerRtpCapabilities });
 ```
+
+In this snippet, `your-webrtc-runtime` is any injected runtime compatible with
+the minimal `WrtcLike` contract.
 
 ## Integration Example
 
@@ -54,7 +62,7 @@ implementation.
 
 ```js
 import { Device } from "mediasoup-client";
-import * as wrtc from "@roamhq/wrtc";
+import * as wrtc from "your-webrtc-runtime";
 import { WrtcHandler } from "mediasoup-client-wrtc";
 
 async function setupDevice(routerRtpCapabilities) {
@@ -160,7 +168,7 @@ If you need a concrete placeholder for local testing, you can provide a fake
 video track source:
 
 ```js
-import * as wrtc from "@roamhq/wrtc";
+import * as wrtc from "your-webrtc-runtime";
 
 function getOutgoingVideoTrack() {
   if (!wrtc.nonstandard?.RTCVideoSource) {
@@ -208,11 +216,12 @@ import {
   createSyntheticAudioTrack,
   createWrtcDevice,
   createWrtcHandlerFactory,
-  getWrtcRuntime,
+  type WrtcRuntimeWithNonstandard,
 } from "mediasoup-client-wrtc/testing";
 ```
 
-This subpath is intended for local integration tooling and example wiring.
+This subpath is intended for local integration tooling and example wiring. You
+pass the concrete runtime implementation explicitly to these helpers.
 
 ## Handler Behavior
 
@@ -261,6 +270,10 @@ mocked WebRTC runtime.
 ## Examples
 
 The repository includes example source files in `examples/`:
+
+Each example calls `loadWrtcRuntimeModule('@roamhq/wrtc')` from
+`mediasoup-client-wrtc/testing`. You can switch to another compatible runtime
+by passing a different module id to that helper.
 
 - `examples/01-load-device.ts`: minimal `Device.load()` bootstrap.
 - `examples/02-produce-consume-audio-mock.ts`: mock signaling flow without a

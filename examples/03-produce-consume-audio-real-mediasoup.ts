@@ -13,24 +13,20 @@
  */
 
 import {
+	attachTransportConnectHandler,
+	cleanupMediaActions,
 	createAudioSink,
-	createLocalMediasoupServer,
 	createLoggerSink,
+	createLocalMediasoupServer,
 	createSyntheticAudioTrack,
-	createWrtcDevice,
-	createWrtcHandlerFactory,
-	getWrtcRuntime,
+	createWrtcDevicePair,
+	loadWrtcRuntimeModule,
+	runMainTask,
 } from 'mediasoup-client-wrtc/testing';
 
-// ---------------------------------------------------------------------------
-// Logging helpers
-// ---------------------------------------------------------------------------
+const injectedWrtcRuntime = loadWrtcRuntimeModule('@roamhq/wrtc');
 
 const loggerSink = createLoggerSink();
-
-// ---------------------------------------------------------------------------
-// mediasoup Router media codecs (audio-only for this PoC)
-// ---------------------------------------------------------------------------
 
 const mediaCodecs = [
 	{
@@ -44,16 +40,15 @@ const mediaCodecs = [
 		rtcpFeedback: [{ type: 'transport-cc' }],
 	},
 ];
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
+const OPUS_AUDIO_CODEC_OPTIONS = {
+	opusStereo: false,
+	opusDtx: true,
+} as const;
 
 async function main() {
 	console.log('[demo] Starting real mediasoup produce-consume audio PoC...');
-	const wrtc = getWrtcRuntime();
+	const wrtcRuntime = injectedWrtcRuntime;
 
-	// Step 1: Boot mediasoup server primitives (Worker + Router).
 	const {
 		worker,
 		router,
@@ -66,20 +61,12 @@ async function main() {
 		listenIp: '127.0.0.1',
 	});
 	console.log('[server] mediasoup Worker and Router created');
-
 	console.log('[server] send/recv WebRtcTransports created');
 
-	// Step 3: Build mediasoup-client Devices using mediasoup-client-wrtc.
-	const handlerFactory = createWrtcHandlerFactory({ loggerSink });
-
-	const { device: senderDevice } = await createWrtcDevice({
+	const { senderDevice, receiverDevice } = await createWrtcDevicePair({
 		routerRtpCapabilities: router.rtpCapabilities,
-		handlerFactory,
-	});
-
-	const { device: receiverDevice } = await createWrtcDevice({
-		routerRtpCapabilities: router.rtpCapabilities,
-		handlerFactory,
+		wrtcRuntime,
+		loggerSink,
 	});
 
 	console.log(
@@ -88,27 +75,15 @@ async function main() {
 		receiverDevice.recvRtpCapabilities.codecs?.length ?? 0,
 	);
 
-	// Step 4: Create client-side send transport and wire signaling to mediasoup.
 	let serverProducer: Awaited<ReturnType<typeof serverSendTransport.produce>> | undefined;
 
-	const clientSendTransport = senderDevice
+	const clientSendTransport = attachTransportConnectHandler(
+		senderDevice
 		.createSendTransport({
 			id: serverSendTransport.id,
 			iceParameters: serverSendTransport.iceParameters,
 			iceCandidates: serverSendTransport.iceCandidates,
 			dtlsParameters: serverSendTransport.dtlsParameters,
-		})
-		.on('connect', async ({ dtlsParameters }, callback, errback) => {
-			try {
-				await serverSendTransport.connect({ dtlsParameters });
-				callback();
-			}
-			catch (error) {
-				errback(error as Error);
-			}
-		})
-		.on('connectionstatechange', (state) => {
-			console.log('[client-send-transport] connectionstatechange ->', state);
 		})
 		.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
 			try {
@@ -123,38 +98,30 @@ async function main() {
 			catch (error) {
 				errback(error as Error);
 			}
-		});
+		}),
+		async (dtlsParameters) => {
+			await serverSendTransport.connect({ dtlsParameters });
+		},
+	);
 
-	// Step 5: Create client-side recv transport and wire signaling to mediasoup.
-	const clientRecvTransport = receiverDevice
+	const clientRecvTransport = attachTransportConnectHandler(
+		receiverDevice
 		.createRecvTransport({
 			id: serverRecvTransport.id,
 			iceParameters: serverRecvTransport.iceParameters,
 			iceCandidates: serverRecvTransport.iceCandidates,
 			dtlsParameters: serverRecvTransport.dtlsParameters,
-		})
-		.on('connect', async ({ dtlsParameters }, callback, errback) => {
-			try {
-				await serverRecvTransport.connect({ dtlsParameters });
-				callback();
-			}
-			catch (error) {
-				errback(error as Error);
-			}
-		})
-		.on('connectionstatechange', (state) => {
-			console.log('[client-recv-transport] connectionstatechange ->', state);
-		});
+		}),
+		async (dtlsParameters) => {
+			await serverRecvTransport.connect({ dtlsParameters });
+		},
+	);
 
-	// Step 6: Generate synthetic audio and start producing from sender (silence).
-	const syntheticAudio = createSyntheticAudioTrack(wrtc);
+	const syntheticAudio = createSyntheticAudioTrack(wrtcRuntime);
 
 	const clientProducer = await clientSendTransport.produce({
 		track: syntheticAudio.track,
-		codecOptions: {
-			opusStereo: false,
-			opusDtx: true,
-		},
+		codecOptions: OPUS_AUDIO_CODEC_OPTIONS,
 	});
 
 	console.log('[client] producer created:', clientProducer.id);
@@ -163,7 +130,6 @@ async function main() {
 		throw new Error('Server producer was not created via produce signaling');
 	}
 
-	// Step 7: Server consumes producer into recv transport (paused first).
 	const options = {
 		producerId: serverProducer.id,
 		rtpCapabilities: receiverDevice.recvRtpCapabilities,
@@ -178,7 +144,6 @@ async function main() {
 
 	console.log('[server] consumer created:', serverConsumer.id);
 
-	// Step 8: Create client consumer from server parameters and resume media.
 	const clientConsumer = await clientRecvTransport.consume({
 		id: serverConsumer.id,
 		producerId: serverProducer.id,
@@ -190,8 +155,7 @@ async function main() {
 
 	console.log('[client] consumer created:', clientConsumer.id);
 
-	// Step 9: Verify real media flow using RTCAudioSink frame callbacks.
-	const audioSink = createAudioSink(wrtc, clientConsumer.track);
+	const audioSink = createAudioSink(wrtcRuntime, clientConsumer.track);
 
 	console.log('[client] waiting up to 1500 ms for real audio frames...');
 
@@ -205,36 +169,26 @@ async function main() {
 		throw new Error('No audio frames received from real mediasoup pipeline');
 	}
 
-	// Step 10: Cleanup in reverse order.
-	audioSink.stop();
-
-	clientConsumer.track.stop();
-	syntheticAudio.stop();
-
-	clientConsumer.close();
-	await serverConsumer.close();
-
-	clientProducer.close();
-	await serverProducer.close();
-
-	clientSendTransport.close();
-	clientRecvTransport.close();
-
-	await serverSendTransport.close();
-	await serverRecvTransport.close();
-
-	await worker.close();
+	await cleanupMediaActions({
+		stopFirst: [
+			audioSink,
+			{ stop: () => clientConsumer.track.stop() },
+			syntheticAudio,
+		],
+		closeNext: [
+			clientConsumer,
+			{ close: () => serverConsumer.close() },
+			clientProducer,
+			{ close: () => serverProducer.close() },
+			clientSendTransport,
+			clientRecvTransport,
+			{ close: () => serverSendTransport.close() },
+			{ close: () => serverRecvTransport.close() },
+			{ close: () => worker.close() },
+		],
+	});
 
 	console.log('[done] Real mediasoup audio pipeline succeeded.');
-
-	// Keep deterministic termination in CI where native finalizers may be noisy.
-	process.exit(0);
 }
 
-try {
-	await main();
-}
-catch (error) {
-	console.error('Fatal error:', error);
-	process.exitCode = 1;
-}
+await runMainTask(main, { forceExitOnCompletion: true });

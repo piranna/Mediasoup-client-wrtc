@@ -75,8 +75,8 @@ function createLogger(prefix: string, sink: LoggerSink): MediasoupLoggerInstance
 
 /**
  * Minimum subset of the WebRTC API required by this handler.
- * Pass an instance of `@roamhq/wrtc`, one of its named exports, or any other
- * object that exposes structurally-compatible WebRTC constructors.
+ * Inject any object that exposes structurally-compatible WebRTC constructors.
+ * The concrete runtime implementation is selected by the caller.
  */
 export interface WrtcLike
 {

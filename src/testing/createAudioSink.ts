@@ -1,9 +1,12 @@
-type WrtcModule = typeof import('@roamhq/wrtc');
+import type { WrtcRuntimeWithNonstandard } from './webrtcRuntimeTypes.ts';
 
 
-export function createAudioSink(wrtc: WrtcModule, track: MediaStreamTrack)
+export function createAudioSink(
+  wrtcRuntime: WrtcRuntimeWithNonstandard,
+  track: MediaStreamTrack,
+)
 {
-  const sink = new wrtc.nonstandard.RTCAudioSink(track);
+  const sink = new wrtcRuntime.nonstandard.RTCAudioSink(track);
   let framesReceived = 0;
 
   sink.ondata = () => {

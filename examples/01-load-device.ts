@@ -3,7 +3,8 @@
 /**
  * 01-load-device.ts
  *
- * Minimal mediasoup-client bootstrap example for Node.js using @roamhq/wrtc.
+ * Minimal mediasoup-client bootstrap example for Node.js using an injected
+ * WebRTC runtime implementation.
  *
  * What this demonstrates:
  *   - How to build a mediasoup-client handler factory backed by wrtc.
@@ -20,14 +21,11 @@ import type { types as mediasoupTypes } from 'mediasoup-client';
 import {
   createLoggerSink,
   createWrtcDevice,
+  loadWrtcRuntimeModule,
+  runMainTask,
 } from 'mediasoup-client-wrtc/testing';
 
-// ---------------------------------------------------------------------------
-// Router RTP capabilities fixture
-//
-// In production these are provided by the mediasoup router. We keep this
-// object static in the example so Device.load() can run deterministically.
-// ---------------------------------------------------------------------------
+const injectedWrtcRuntime = loadWrtcRuntimeModule('@roamhq/wrtc');
 
 const routerRtpCapabilities: mediasoupTypes.RtpCapabilities = {
   codecs: [
@@ -84,20 +82,9 @@ const routerRtpCapabilities: mediasoupTypes.RtpCapabilities = {
   ],
 };
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
 async function main() {
   console.log('[demo] Starting load-device example...');
 
-  // Step 1: Create a handler factory
-  //
-  // The handler factory is the adapter used by mediasoup-client to interact
-  // with the WebRTC runtime. Here we inject wrtc plus a logger sink so the
-  // internals can be inspected from the console.
-  // We centralize wrtc runtime loading, logger wiring, and Device bootstrap in
-  // src/testing helpers so all examples share the same baseline setup logic.
   const loggerSink = createLoggerSink();
 
   const {
@@ -105,6 +92,7 @@ async function main() {
     nativeRtpCapabilities,
   } = await createWrtcDevice({
     routerRtpCapabilities,
+    wrtcRuntime: injectedWrtcRuntime,
     loggerSink,
     probeDirection: 'sendonly',
   });
@@ -113,24 +101,9 @@ async function main() {
     `Native codecs detected:`, nativeRtpCapabilities.codecs?.length ?? 0
   );
 
-  // Step 2 already loaded the Device using router RTP capabilities.
-  console.log('Loading device...');
-
-  // Step 5: Report production capability checks
-  //
-  // canProduce(kind) is the simplest readiness signal after load().
   console.log('Device loaded successfully');
   console.log(`Can produce audio: ${device.canProduce('audio')}`);
   console.log(`Can produce video: ${device.canProduce('video')}`);
 }
 
-// Keep top-level execution explicit so the script remains easy to run from CI
-// while still producing a non-zero exit code if bootstrap fails.
-try {
-  await main();
-}
-catch (error)
-{
-  console.error('Error:', error);
-  process.exitCode = 1;
-}
+await runMainTask(main, { errorPrefix: 'Error:' });

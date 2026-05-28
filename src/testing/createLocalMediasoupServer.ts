@@ -41,9 +41,10 @@ export async function createLocalMediasoupServer(
   const router = await worker.createRouter({ mediaCodecs });
 
   const transportOptions = {
-    listenIps: [{ ip: listenIp, announcedIp: listenIp }],
-    enableUdp: true,
-    enableTcp: true,
+    listenInfos: [
+      { protocol: 'udp' as const, ip: listenIp, announcedAddress: listenIp },
+      { protocol: 'tcp' as const, ip: listenIp, announcedAddress: listenIp },
+    ],
     preferUdp: true,
   };
 

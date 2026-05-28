@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { types as mediasoupTypes } from 'mediasoup-client';
-
 import {
   createAudioSink,
   createLocalMediasoupServer,
@@ -10,57 +8,16 @@ import {
   createSyntheticAudioTrack,
   createWrtcDevice,
   createWrtcHandlerFactory,
-  getWrtcRuntime,
+  type WrtcRuntimeWithNonstandard,
 } from '../src/testing/index.ts';
+import { createMockWrtcRuntime } from './fixtures/mockWrtcRuntime.ts';
+import {
+  AUDIO_VIDEO_ROUTER_RTP_CAPABILITIES,
+} from './fixtures/rtpCapabilities.ts';
 
-
-const routerRtpCapabilities: mediasoupTypes.RtpCapabilities = {
-  codecs: [
-    {
-      kind: 'audio' as const,
-      mimeType: 'audio/opus',
-      preferredPayloadType: 111,
-      clockRate: 48000,
-      channels: 2,
-      parameters: {
-        useinbandfec: 1,
-      },
-      rtcpFeedback: [
-        { type: 'transport-cc' },
-      ],
-    },
-    {
-      kind: 'video' as const,
-      mimeType: 'video/VP8',
-      preferredPayloadType: 96,
-      clockRate: 90000,
-      parameters: {},
-      rtcpFeedback: [
-        { type: 'nack' },
-        { type: 'nack', parameter: 'pli' },
-        { type: 'ccm', parameter: 'fir' },
-        { type: 'goog-remb' },
-        { type: 'transport-cc' },
-      ],
-    },
-  ],
-  headerExtensions: [
-    {
-      kind: 'audio' as const,
-      uri: 'urn:ietf:params:rtp-hdrext:sdes:mid',
-      preferredId: 1,
-      preferredEncrypt: false,
-      direction: 'sendrecv' as const,
-    },
-    {
-      kind: 'video' as const,
-      uri: 'urn:ietf:params:rtp-hdrext:sdes:mid',
-      preferredId: 1,
-      preferredEncrypt: false,
-      direction: 'sendrecv' as const,
-    },
-  ],
-};
+const injectedWrtcRuntime = {
+	...createMockWrtcRuntime(),
+} as unknown as WrtcRuntimeWithNonstandard;
 
 
 test('createLoggerSink supports default and custom prefixes', () => {
@@ -105,15 +62,14 @@ test('createLoggerSink supports default and custom prefixes', () => {
 
 
 test('createWrtcHandlerFactory and createWrtcDevice work with and without probeDirection', async () => {
-  const wrtc = getWrtcRuntime();
-  assert.ok(wrtc.RTCPeerConnection);
+  assert.ok(injectedWrtcRuntime.RTCPeerConnection);
 
-  const handlerFactory = createWrtcHandlerFactory();
+  const handlerFactory = createWrtcHandlerFactory(injectedWrtcRuntime);
   const sctpCapabilities = await handlerFactory.getNativeSctpCapabilities();
   assert.deepEqual(sctpCapabilities, { numStreams: { OS: 65535, MIS: 65535 } });
 
   const withProbe = await createWrtcDevice({
-    routerRtpCapabilities,
+    routerRtpCapabilities: AUDIO_VIDEO_ROUTER_RTP_CAPABILITIES,
     handlerFactory,
     probeDirection: 'sendonly',
   });
@@ -122,7 +78,7 @@ test('createWrtcHandlerFactory and createWrtcDevice work with and without probeD
   assert.ok(withProbe.nativeRtpCapabilities);
 
   const withoutProbe = await createWrtcDevice({
-    routerRtpCapabilities,
+    routerRtpCapabilities: AUDIO_VIDEO_ROUTER_RTP_CAPABILITIES,
     handlerFactory,
   });
 
@@ -130,12 +86,21 @@ test('createWrtcHandlerFactory and createWrtcDevice work with and without probeD
   assert.equal(withoutProbe.nativeRtpCapabilities, undefined);
 
   const autoFactory = await createWrtcDevice({
-    routerRtpCapabilities,
+    routerRtpCapabilities: AUDIO_VIDEO_ROUTER_RTP_CAPABILITIES,
+    wrtcRuntime: injectedWrtcRuntime,
     loggerSink: createLoggerSink('[auto-factory]'),
   });
 
   assert.equal(typeof autoFactory.handlerFactory.factory, 'function');
   assert.equal(autoFactory.nativeRtpCapabilities, undefined);
+});
+
+
+test('createWrtcDevice throws if neither handlerFactory nor wrtcRuntime are provided', async () => {
+  await assert.rejects(
+    createWrtcDevice({ routerRtpCapabilities: AUDIO_VIDEO_ROUTER_RTP_CAPABILITIES }),
+    /Either handlerFactory or wrtcRuntime must be provided/,
+  );
 });
 
 
@@ -163,7 +128,7 @@ test('createSyntheticAudioTrack generates frames and stop() halts the track', as
     nonstandard: {
       RTCAudioSource: FakeRTCAudioSource,
     },
-  } as unknown as typeof import('@roamhq/wrtc');
+  } as unknown as WrtcRuntimeWithNonstandard;
 
   const syntheticAudio = createSyntheticAudioTrack(fakeWrtc, {
     sampleRate: 48000,
@@ -200,7 +165,7 @@ test('createAudioSink tracks frames, waits, and stops', async () => {
     nonstandard: {
       RTCAudioSink: FakeRTCAudioSink,
     },
-  } as unknown as typeof import('@roamhq/wrtc');
+  } as unknown as WrtcRuntimeWithNonstandard;
 
   const sinkApi = createAudioSink(fakeWrtc, {} as MediaStreamTrack);
 
