@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 
-import { Device } from 'mediasoup-client';
-import * as wrtc from '@roamhq/wrtc';
+import { createRequire } from 'node:module';
 
-import { WrtcHandler } from '.';
+import { Device, types as mediasoupTypes } from 'mediasoup-client';
+import WrtcHandler from 'mediasoup-client-wrtc';
+
+// @roamhq/wrtc is a CJS module; use createRequire so its constructors are
+// accessible as named properties in an ESM project.
+const require = createRequire(import.meta.url);
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const wrtc = require('@roamhq/wrtc') as typeof import('@roamhq/wrtc');
 
 
-const routerRtpCapabilities = {
+const routerRtpCapabilities: mediasoupTypes.RtpCapabilities = {
   codecs: [
     {
       kind: 'audio' as const,
@@ -64,6 +70,8 @@ const routerRtpCapabilities = {
 
 
 async function main() {
+  console.log('[demo] Starting load-device example...');
+
   const handlerFactory = WrtcHandler.createFactory(wrtc, {
     info: (...args) => console.info('[wrtc-handler]', ...args),
     warn: (...args) => console.warn('[wrtc-handler]', ...args),
@@ -71,26 +79,28 @@ async function main() {
   });
 
   const nativeRtpCapabilities = await handlerFactory.getNativeRtpCapabilities({
-    direction: 'send',
+    direction: 'sendonly',
   });
 
   console.log(
-    `Native codecs detected: ${nativeRtpCapabilities.codecs.length}`
+    `Native codecs detected:`, nativeRtpCapabilities.codecs?.length ?? 0
   );
 
   const device = new Device({ handlerFactory });
 
   console.log('Loading device...');
-  await device.load({
-    routerRtpCapabilities,
-  });
+  await device.load({routerRtpCapabilities});
 
   console.log('Device loaded successfully');
   console.log(`Can produce audio: ${device.canProduce('audio')}`);
   console.log(`Can produce video: ${device.canProduce('video')}`);
 }
 
-main().catch((error) => {
+try {
+  await main();
+}
+catch (error)
+{
   console.error('Error:', error);
   process.exitCode = 1;
-});
+}

@@ -1,6 +1,6 @@
 import type { DtlsRole } from 'mediasoup-client/types';
 
-import { WrtcHandler } from './index.js';
+import { WrtcHandler } from 'mediasoup-client-wrtc';
 
 const WRTC_HANDLER_TEST_HOOKS = Symbol.for('mediasoup-client-wrtc/test-hooks');
 

@@ -12,6 +12,12 @@
   "author": "Jesús Leganés-Combarro 'piranna' (https://piranna.github.io)",
   "type": "module",
   "main": "index.js",
+  "exports": {
+    ".": {
+      "import": "./index.js",
+      "types": "./index.d.ts"
+    }
+  },
   "scripts": {
     "build": "tsc",
     "prepare": "npm run build",

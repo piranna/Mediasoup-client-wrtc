@@ -24,7 +24,8 @@
   },
   "include": [
     "index.ts",
-    "test-hooks.ts"
+    "test/test-hooks.ts",
+    "examples/**/*.ts"
   ],
   "exclude": [
     "node_modules"
