@@ -1,8 +1,11 @@
 # mediasoup-client-wrtc
 
-mediasoup-client handler for Node.js using WebRTC-compatible implementations such as @roamhq/wrtc.
+mediasoup-client handler for Node.js using WebRTC-compatible implementations
+such as @roamhq/wrtc.
 
-It lets you use mediasoup-client Device outside the browser through a handler factory that exposes native RTP/SCTP capabilities and manages transports, tracks, and data channels.
+It lets you use mediasoup-client Device outside the browser through a handler
+factory that exposes native RTP/SCTP capabilities and manages transports,
+tracks, and data channels.
 
 ## Features
 
@@ -33,9 +36,9 @@ npm install mediasoup-client mediasoup-client-wrtc @roamhq/wrtc
 ## Quick Start
 
 ```js
-import { Device } from 'mediasoup-client';
-import * as wrtc from '@roamhq/wrtc';
-import { WrtcHandler } from 'mediasoup-client-wrtc';
+import { Device } from "mediasoup-client";
+import * as wrtc from "@roamhq/wrtc";
+import { WrtcHandler } from "mediasoup-client-wrtc";
 
 const handlerFactory = WrtcHandler.createFactory(wrtc);
 const device = new Device({ handlerFactory });
@@ -45,12 +48,14 @@ await device.load({ routerRtpCapabilities });
 
 ## Integration Example
 
-The following example shows the client-side wiring for a typical mediasoup flow. Signaling calls are placeholders because they depend on your server implementation.
+The following example shows the client-side wiring for a typical mediasoup flow.
+Signaling calls are placeholders because they depend on your server
+implementation.
 
 ```js
-import { Device } from 'mediasoup-client';
-import * as wrtc from '@roamhq/wrtc';
-import { WrtcHandler } from 'mediasoup-client-wrtc';
+import { Device } from "mediasoup-client";
+import * as wrtc from "@roamhq/wrtc";
+import { WrtcHandler } from "mediasoup-client-wrtc";
 
 async function setupDevice(routerRtpCapabilities) {
   const handlerFactory = WrtcHandler.createFactory(wrtc);
@@ -63,7 +68,7 @@ async function setupDevice(routerRtpCapabilities) {
 async function createSendTransport(device, transportOptions) {
   const transport = device.createSendTransport(transportOptions);
 
-  transport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+  transport.on("connect", async ({ dtlsParameters }, callback, errback) => {
     try {
       await signalConnectTransport({
         transportId: transport.id,
@@ -75,19 +80,22 @@ async function createSendTransport(device, transportOptions) {
     }
   });
 
-  transport.on('produce', async ({ kind, rtpParameters, appData }, callback, errback) => {
-    try {
-      const { id } = await signalProduce({
-        transportId: transport.id,
-        kind,
-        rtpParameters,
-        appData,
-      });
-      callback({ id });
-    } catch (error) {
-      errback(error);
-    }
-  });
+  transport.on(
+    "produce",
+    async ({ kind, rtpParameters, appData }, callback, errback) => {
+      try {
+        const { id } = await signalProduce({
+          transportId: transport.id,
+          kind,
+          rtpParameters,
+          appData,
+        });
+        callback({ id });
+      } catch (error) {
+        errback(error);
+      }
+    },
+  );
 
   return transport;
 }
@@ -95,7 +103,7 @@ async function createSendTransport(device, transportOptions) {
 async function createRecvTransport(device, transportOptions) {
   const transport = device.createRecvTransport(transportOptions);
 
-  transport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+  transport.on("connect", async ({ dtlsParameters }, callback, errback) => {
     try {
       await signalConnectTransport({
         transportId: transport.id,
@@ -110,7 +118,11 @@ async function createRecvTransport(device, transportOptions) {
   return transport;
 }
 
-async function startMedia(routerRtpCapabilities, sendTransportOptions, recvTransportOptions) {
+async function startMedia(
+  routerRtpCapabilities,
+  sendTransportOptions,
+  recvTransportOptions,
+) {
   const device = await setupDevice(routerRtpCapabilities);
   const sendTransport = await createSendTransport(device, sendTransportOptions);
   const recvTransport = await createRecvTransport(device, recvTransportOptions);
@@ -118,7 +130,11 @@ async function startMedia(routerRtpCapabilities, sendTransportOptions, recvTrans
   const track = getOutgoingVideoTrack();
   const producer = await sendTransport.produce({ track });
 
-  const { id: consumerId, kind, rtpParameters } = await signalConsume({
+  const {
+    id: consumerId,
+    kind,
+    rtpParameters,
+  } = await signalConsume({
     transportId: recvTransport.id,
     producerId: producer.id,
   });
@@ -134,18 +150,21 @@ async function startMedia(routerRtpCapabilities, sendTransportOptions, recvTrans
 }
 ```
 
-`getOutgoingVideoTrack()` represents your application-specific Node.js media source, such as a capture pipeline, an FFmpeg bridge, or a custom wrtc track source.
+`getOutgoingVideoTrack()` represents your application-specific Node.js media
+source, such as a capture pipeline, an FFmpeg bridge, or a custom wrtc track
+source.
 
 ### Proposed Node.js Track Source Example
 
-If you need a concrete placeholder for local testing, you can provide a fake video track source:
+If you need a concrete placeholder for local testing, you can provide a fake
+video track source:
 
 ```js
-import * as wrtc from '@roamhq/wrtc';
+import * as wrtc from "@roamhq/wrtc";
 
 function getOutgoingVideoTrack() {
   if (!wrtc.nonstandard?.RTCVideoSource) {
-    throw new Error('RTCVideoSource is not available in this wrtc build');
+    throw new Error("RTCVideoSource is not available in this wrtc build");
   }
 
   const source = new wrtc.nonstandard.RTCVideoSource();
@@ -163,20 +182,24 @@ function getOutgoingVideoTrack() {
 Creates a mediasoup-compatible `HandlerFactory`.
 
 - `wrtc`: compatible WebRTC runtime.
-- `loggerSink`: object with `info`, `warn`, and `error` methods. Defaults to `console`.
+- `loggerSink`: object with `info`, `warn`, and `error` methods. Defaults to
+  `console`.
 
 ### Minimal `WrtcLike` interface
 
 ```ts
 interface WrtcLike {
-  RTCPeerConnection: new (configuration?: RTCConfiguration) => RTCPeerConnection;
+  RTCPeerConnection: new (
+    configuration?: RTCConfiguration,
+  ) => RTCPeerConnection;
   MediaStream: new () => MediaStream;
 }
 ```
 
 ## Handler Behavior
 
-- Computes native RTP capabilities by generating a local SDP offer with audio/video transceivers.
+- Computes native RTP capabilities by generating a local SDP offer with
+  audio/video transceivers.
 - Uses mediasoup-client `InvalidStateError` for closed-state checks.
 - Keeps a MID <-> RTCRtpTransceiver map for follow-up operations.
 - Supports sender operations:
@@ -193,6 +216,13 @@ interface WrtcLike {
 
 ## Development
 
+Project structure:
+
+- TypeScript source code lives in `src/`.
+- Build output is emitted to `dist/` (flat output, e.g. `dist/index.js`).
+- `test/` and `examples/` are source-only and are not transpiled by
+  `npm run build`.
+
 Build:
 
 ```sh
@@ -205,7 +235,23 @@ Run tests:
 npm test
 ```
 
-Current tests cover factory contract and native capability bootstrap with a mocked WebRTC runtime.
+Tests run directly from TypeScript files in `test/*.test.ts`.
+
+Current tests cover factory contract and native capability bootstrap with a
+mocked WebRTC runtime.
+
+## Examples
+
+The repository includes example source files in `examples/`:
+
+- `examples/01-load-device.ts`: minimal `Device.load()` bootstrap.
+- `examples/02-produce-consume-audio-mock.ts`: mock signaling flow without a
+  real mediasoup server.
+- `examples/03-produce-consume-audio-real-mediasoup.ts`: end-to-end flow with a
+  local mediasoup Worker/Router and real media exchange.
+
+Examples are provided as TypeScript reference code and are not transpiled by
+`npm run build`.
 
 ## License
 

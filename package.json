@@ -11,18 +11,18 @@
   "license": "ISC",
   "author": "Jesús Leganés-Combarro 'piranna' (https://piranna.github.io)",
   "type": "module",
-  "main": "index.js",
+  "main": "dist/index.js",
   "exports": {
     ".": {
-      "import": "./index.js",
-      "types": "./index.d.ts"
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
     }
   },
   "scripts": {
     "build": "tsc",
     "prepare": "npm run build",
     "pretest": "npm run build",
-    "test": "node --experimental-test-coverage --test test/*.test.js"
+    "test": "node --experimental-test-coverage --test test/*.test.ts"
   },
   "dependencies": {
     "mediasoup-client": "^3.20.0"

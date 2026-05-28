@@ -4,8 +4,8 @@ import test from "node:test";
 import * as sdpTransform from "sdp-transform";
 import { ortc, testFakeParameters } from "mediasoup-client";
 
-import { WrtcHandler } from "../index.js";
-import { setupTransportWithoutLocalSdpForTest } from "./test-hooks.js";
+import { WrtcHandler } from "../dist/index.js";
+import { setupTransportWithoutLocalSdpForTest } from "./test-hooks.ts";
 
 const VALID_OFFER_SDP = `v=0
 o=- 0 0 IN IP4 127.0.0.1

@@ -10,9 +10,9 @@
     ],
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "outDir": "./",
+    "outDir": "./dist",
     "rewriteRelativeImportExtensions": true,
-    "rootDir": "./",
+    "rootDir": "./src",
     "skipLibCheck": true,
     "sourceMap": true,
     "strict": true,
@@ -23,9 +23,7 @@
     "verbatimModuleSyntax": true
   },
   "include": [
-    "index.ts",
-    "test/test-hooks.ts",
-    "examples/**/*.ts"
+    "src/**/*.ts"
   ],
   "exclude": [
     "node_modules"
