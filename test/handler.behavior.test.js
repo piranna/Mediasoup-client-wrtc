@@ -5,7 +5,7 @@ import * as sdpTransform from "sdp-transform";
 import { ortc, testFakeParameters } from "mediasoup-client";
 
 import { WrtcHandler } from "../index.js";
-import { setupTransportWithoutLocalSdpForTest } from "../test-hooks.js";
+import { setupTransportWithoutLocalSdpForTest } from "./test-hooks.js";
 
 const VALID_OFFER_SDP = `v=0
 o=- 0 0 IN IP4 127.0.0.1
@@ -302,7 +302,10 @@ class MockRTCPeerConnectionExtmapAllowMixed extends MockRTCPeerConnection {
   async createOffer() {
     return {
       type: "offer",
-      sdp: VALID_OFFER_SDP.replace("a=msid-semantic: WMS *", "a=msid-semantic: WMS *\na=extmap-allow-mixed"),
+      sdp: VALID_OFFER_SDP.replace(
+        "a=msid-semantic: WMS *",
+        "a=msid-semantic: WMS *\na=extmap-allow-mixed",
+      ),
     };
   }
 }
@@ -311,7 +314,10 @@ class MockRTCPeerConnectionH264 extends MockRTCPeerConnection {
   async createOffer() {
     return {
       type: "offer",
-      sdp: VALID_OFFER_SDP.replace("a=rtpmap:96 VP8/90000", "a=rtpmap:96 H264/90000"),
+      sdp: VALID_OFFER_SDP.replace(
+        "a=rtpmap:96 VP8/90000",
+        "a=rtpmap:96 H264/90000",
+      ),
     };
   }
 }
@@ -742,8 +748,12 @@ test("stopSending tolerates transceiver.stop() errors", async () => {
 
   attachConnectHandler(handler);
 
-  const first = await handler.send({ track: { id: "track-first", kind: "audio" } });
-  const result = await handler.send({ track: { id: "track-stop-throw", kind: "video" } });
+  const first = await handler.send({
+    track: { id: "track-first", kind: "audio" },
+  });
+  const result = await handler.send({
+    track: { id: "track-stop-throw", kind: "video" },
+  });
   const pc = MockRTCPeerConnection.instances.at(-1);
   const transceiver = pc
     .getTransceivers()
@@ -847,9 +857,14 @@ test("additional alternate branches are exercised", async () => {
 
     attachConnectHandler(handler);
 
-    const sent = await handler.send({ track: { id: "replace-track", kind: "audio" } });
+    const sent = await handler.send({
+      track: { id: "replace-track", kind: "audio" },
+    });
 
-    await handler.replaceTrack(sent.localId, { id: "new-track", kind: "audio" });
+    await handler.replaceTrack(sent.localId, {
+      id: "new-track",
+      kind: "audio",
+    });
     await assert.rejects(
       () => handler.stopSending("missing"),
       /associated RTCRtpTransceiver not found/,
@@ -1202,10 +1217,7 @@ test("targeted remaining boolean branches are exercised", async () => {
 test("close() releases local stream when runtime exposes release()", () => {
   MockMediaStreamWithRelease.releaseCalls = [];
 
-  const wrtc = createWrtc(
-    MockRTCPeerConnection,
-    MockMediaStreamWithRelease,
-  );
+  const wrtc = createWrtc(MockRTCPeerConnection, MockMediaStreamWithRelease);
   const factory = WrtcHandler.createFactory(wrtc);
   const handler = factory.factory(createHandlerOptions("send"));
 
