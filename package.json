@@ -29,8 +29,9 @@
   },
   "devDependencies": {
     "@roamhq/wrtc": "^0.10.0",
-    "@types/node": "^24.10.1",
+    "@types/node": "^25.9.1",
     "@types/sdp-transform": "^2.15.0",
+    "mediasoup": "^3.20.0",
     "typescript": "^6.0.3"
   }
 }
