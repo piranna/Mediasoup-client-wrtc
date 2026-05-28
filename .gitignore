@@ -143,7 +143,5 @@ vite.config.ts.timestamp-*
 .vite/
 .early.coverage/
 .v8cov/
-index.d.ts*
-index.js*
-test-hooks.d.ts*
-test-hooks.js*
+**/*.d.ts*
+**/*.js*

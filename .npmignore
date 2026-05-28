@@ -1,7 +1,6 @@
-*.tgz
 .v8cov/
+examples/
 test/
-index.ts
-server.ts
-test-hooks.ts
+*.tgz
+*.ts*
 tsconfig.json
