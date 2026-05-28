@@ -12,6 +12,8 @@
  * packets can flow between producer and consumer.
  */
 
+import * as mediasoup from 'mediasoup';
+
 import {
 	attachTransportConnectHandler,
 	cleanupMediaActions,
@@ -54,7 +56,7 @@ async function main() {
 		router,
 		sendTransport: serverSendTransport,
 		recvTransport: serverRecvTransport,
-	} = await createLocalMediasoupServer({
+	} = await createLocalMediasoupServer(mediasoup, {
 		mediaCodecs,
 		rtcMinPort: 40000,
 		rtcMaxPort: 40100,

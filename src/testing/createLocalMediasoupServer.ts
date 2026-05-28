@@ -1,4 +1,4 @@
-import * as mediasoup from 'mediasoup';
+import type * as Mediasoup from 'mediasoup';
 
 
 const DEFAULT_AUDIO_MEDIA_CODECS = [
@@ -24,6 +24,7 @@ type CreateLocalMediasoupServerOptions = {
 
 
 export async function createLocalMediasoupServer(
+  mediasoup: typeof Mediasoup,
   {
     mediaCodecs = DEFAULT_AUDIO_MEDIA_CODECS,
     rtcMinPort = 40000,

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import * as mediasoup from 'mediasoup';
+
 import {
   createAudioSink,
   createLocalMediasoupServer,
@@ -188,7 +190,7 @@ test('createAudioSink tracks frames, waits, and stops', async () => {
 
 
 test('createLocalMediasoupServer boots worker/router/transports with defaults', async () => {
-  const server = await createLocalMediasoupServer();
+  const server = await createLocalMediasoupServer(mediasoup);
 
   try {
     assert.ok(server.worker.pid > 0);
@@ -204,7 +206,7 @@ test('createLocalMediasoupServer boots worker/router/transports with defaults', 
 });
 
 test('createLocalMediasoupServer accepts custom options', async () => {
-  const server = await createLocalMediasoupServer({
+  const server = await createLocalMediasoupServer(mediasoup, {
     rtcMinPort: 41000,
     rtcMaxPort: 41100,
     listenIp: '127.0.0.1',
