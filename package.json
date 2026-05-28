@@ -25,7 +25,6 @@
   "scripts": {
     "build": "tsc",
     "prepare": "npm run build",
-    "pretest": "npm run build",
     "test": "node --experimental-test-coverage --test-coverage-include='src/**/*.ts' --test test/*.test.ts"
   },
   "dependencies": {
