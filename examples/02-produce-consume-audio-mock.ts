@@ -21,26 +21,22 @@
  *   mediasoup server + real ICE candidates for a fully wired-up demo.
  */
 
-import { createRequire } from 'node:module';
+import type { types as mediasoupTypes } from 'mediasoup-client';
 
-import { Device, types as mediasoupTypes } from 'mediasoup-client';
-import WrtcHandler from 'mediasoup-client-wrtc';
-
-// @roamhq/wrtc is a CJS module; use createRequire so its constructors are
-// accessible as named properties (RTCPeerConnection, nonstandard, etc.).
-const require = createRequire(import.meta.url);
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const wrtc = require('@roamhq/wrtc') as typeof import('@roamhq/wrtc');
+import {
+	createAudioSink,
+	createLoggerSink,
+	createSyntheticAudioTrack,
+	createWrtcDevice,
+	createWrtcHandlerFactory,
+	getWrtcRuntime,
+} from 'mediasoup-client-wrtc/testing';
 
 // ---------------------------------------------------------------------------
 // Logging helpers — mirror the style used in 01-load-device.ts
 // ---------------------------------------------------------------------------
 
-const loggerSink = {
-	info: (...args: unknown[]) => console.info('[wrtc-handler]', ...args),
-	warn: (...args: unknown[]) => console.warn('[wrtc-handler]', ...args),
-	error: (...args: unknown[]) => console.error('[wrtc-handler]', ...args),
-};
+const loggerSink = createLoggerSink();
 
 // ---------------------------------------------------------------------------
 // Router RTP capabilities (audio-only subset)
@@ -124,21 +120,24 @@ const FAKE_DTLS_PARAMETERS = {
 
 async function main() {
 	console.log('[demo] Starting produce-consume-audio PoC...');
+	const wrtc = getWrtcRuntime();
 
 	// ── Step 1: Create a shared handler factory ────────────────────────────────
 	//
 	// WrtcHandler.createFactory() wraps @roamhq/wrtc so mediasoup-client can use
 	// it as its WebRTC engine. Both devices share the same factory.
 
-	const handlerFactory = WrtcHandler.createFactory(wrtc, loggerSink);
+	const handlerFactory = createWrtcHandlerFactory({ loggerSink });
 
 	// ── Step 2: Create and load the sender Device ──────────────────────────────
 	//
 	// Device.load() negotiates the local handler's native RTP capabilities
 	// against the router's capabilities to compute what the device can send.
 
-	const senderDevice = new Device({ handlerFactory });
-	await senderDevice.load({ routerRtpCapabilities });
+	const { device: senderDevice } = await createWrtcDevice({
+		routerRtpCapabilities,
+		handlerFactory,
+	});
 	console.log(
 		`[sender]   device loaded — can produce audio:`,
 		senderDevice.canProduce('audio')
@@ -149,8 +148,10 @@ async function main() {
 	// A separate Device instance represents the consumer side. In a real app this
 	// would run in a different process / machine.
 
-	const receiverDevice = new Device({ handlerFactory });
-	await receiverDevice.load({ routerRtpCapabilities });
+	const { device: receiverDevice } = await createWrtcDevice({
+		routerRtpCapabilities,
+		handlerFactory,
+	});
 	console.log(
 		`[receiver] device loaded — codecs:`,
 		receiverDevice.recvRtpCapabilities.codecs?.length ?? 0
@@ -230,18 +231,7 @@ async function main() {
 	// RTCAudioSource lets us push PCM frames programmatically without a real
 	// microphone — ideal for CI / headless environments.
 
-	const audioSource = new wrtc.nonstandard.RTCAudioSource();
-	const audioTrack = audioSource.createTrack();
-
-	// Push 10 ms frames of silence (zero-filled Int16Array) at 48 kHz mono.
-	const sampleRate = 48000;
-	const channelCount = 1;
-	const numberOfFrames = sampleRate / 100; // 480 samples = 10 ms
-	const samples = new Int16Array(numberOfFrames * channelCount); // silence
-
-	const audioInterval = setInterval(() => {
-		audioSource.onData({ samples, sampleRate, channelCount, numberOfFrames });
-	}, 10 /* ms */);
+	const syntheticAudio = createSyntheticAudioTrack(wrtc);
 
 	// ── Step 7: Produce audio from the sender ──────────────────────────────────
 	//
@@ -251,7 +241,7 @@ async function main() {
 	//   3. Resolves the RTP parameters → fires 'produce' event (step 4 above).
 
 	const producer = await sendTransport.produce({
-		track: audioTrack,
+		track: syntheticAudio.track,
 		codecOptions: {
 			opusStereo: false,
 			opusDtx: true,
@@ -294,12 +284,7 @@ async function main() {
 	// if real connectivity were present it would fire the 'data' event with
 	// decoded PCM frames.
 
-	const audioSink = new wrtc.nonstandard.RTCAudioSink(consumer.track);
-	let framesReceived = 0;
-
-	audioSink.ondata = () => {
-		framesReceived++;
-	};
+	const audioSink = createAudioSink(wrtc, consumer.track);
 
 	console.log(
 		`[receiver] track.id: ${consumer.track.id}, readyState:`,
@@ -308,7 +293,9 @@ async function main() {
 	console.log(`[receiver] RTCAudioSink attached — waiting 200 ms for frames…`);
 
 	// Give the ICE machinery a moment; frames only arrive with real connectivity.
-	await new Promise<void>((resolve) => setTimeout(resolve, 200));
+	await audioSink.wait(200);
+
+	const framesReceived = audioSink.getFramesReceived();
 
 	console.log(
 		`[receiver] frames received: ${framesReceived}`,
@@ -320,11 +307,9 @@ async function main() {
 	// ── Clean up ───────────────────────────────────────────────────────────────
 
 	audioSink.stop();
-	audioSink.ondata = undefined;
-	clearInterval(audioInterval);
 
 	consumer.track.stop();
-	audioTrack.stop();
+	syntheticAudio.stop();
 
 	consumer.close();
 	producer.close();

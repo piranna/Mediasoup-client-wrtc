@@ -15,16 +15,12 @@
  * validating capability negotiation and initial client bootstrap.
  */
 
-import { createRequire } from 'node:module';
+import type { types as mediasoupTypes } from 'mediasoup-client';
 
-import { Device, types as mediasoupTypes } from 'mediasoup-client';
-import WrtcHandler from 'mediasoup-client-wrtc';
-
-// @roamhq/wrtc is a CJS module; use createRequire so its constructors are
-// accessible as named properties in an ESM project.
-const require = createRequire(import.meta.url);
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const wrtc = require('@roamhq/wrtc') as typeof import('@roamhq/wrtc');
+import {
+  createLoggerSink,
+  createWrtcDevice,
+} from 'mediasoup-client-wrtc/testing';
 
 // ---------------------------------------------------------------------------
 // Router RTP capabilities fixture
@@ -100,37 +96,25 @@ async function main() {
   // The handler factory is the adapter used by mediasoup-client to interact
   // with the WebRTC runtime. Here we inject wrtc plus a logger sink so the
   // internals can be inspected from the console.
-  const handlerFactory = WrtcHandler.createFactory(wrtc, {
-    info: (...args) => console.info('[wrtc-handler]', ...args),
-    warn: (...args) => console.warn('[wrtc-handler]', ...args),
-    error: (...args) => console.error('[wrtc-handler]', ...args),
-  });
+  // We centralize wrtc runtime loading, logger wiring, and Device bootstrap in
+  // src/testing helpers so all examples share the same baseline setup logic.
+  const loggerSink = createLoggerSink();
 
-  // Step 2: Probe native RTP capabilities
-  //
-  // This reports what the local WebRTC engine can encode/decode natively. We
-  // request send-side probing because this example focuses on producer
-  // readiness after loading the Device.
-  const nativeRtpCapabilities = await handlerFactory.getNativeRtpCapabilities({
-    direction: 'sendonly',
+  const {
+    device,
+    nativeRtpCapabilities,
+  } = await createWrtcDevice({
+    routerRtpCapabilities,
+    loggerSink,
+    probeDirection: 'sendonly',
   });
 
   console.log(
     `Native codecs detected:`, nativeRtpCapabilities.codecs?.length ?? 0
   );
 
-  // Step 3: Create a mediasoup-client Device
-  //
-  // The Device is the high-level endpoint abstraction. It keeps the effective
-  // RTP capabilities computed from router capabilities + local native support.
-  const device = new Device({ handlerFactory });
-
-  // Step 4: Load the Device with router RTP capabilities
-  //
-  // Device.load() performs capability negotiation and prepares the instance for
-  // creating send/recv transports later.
+  // Step 2 already loaded the Device using router RTP capabilities.
   console.log('Loading device...');
-  await device.load({routerRtpCapabilities});
 
   // Step 5: Report production capability checks
   //

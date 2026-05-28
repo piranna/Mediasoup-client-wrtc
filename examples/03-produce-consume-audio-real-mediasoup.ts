@@ -12,26 +12,21 @@
  * packets can flow between producer and consumer.
  */
 
-import { createRequire } from 'node:module';
-
-import * as mediasoup from 'mediasoup';
-import { Device } from 'mediasoup-client';
-import WrtcHandler from 'mediasoup-client-wrtc';
-
-// @roamhq/wrtc is CJS; use createRequire to access runtime constructors from ESM.
-const require = createRequire(import.meta.url);
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const wrtc = require('@roamhq/wrtc') as typeof import('@roamhq/wrtc');
+import {
+	createAudioSink,
+	createLocalMediasoupServer,
+	createLoggerSink,
+	createSyntheticAudioTrack,
+	createWrtcDevice,
+	createWrtcHandlerFactory,
+	getWrtcRuntime,
+} from 'mediasoup-client-wrtc/testing';
 
 // ---------------------------------------------------------------------------
 // Logging helpers
 // ---------------------------------------------------------------------------
 
-const loggerSink = {
-	info: (...args: unknown[]) => console.info('[wrtc-handler]', ...args),
-	warn: (...args: unknown[]) => console.warn('[wrtc-handler]', ...args),
-	error: (...args: unknown[]) => console.error('[wrtc-handler]', ...args),
-};
+const loggerSink = createLoggerSink();
 
 // ---------------------------------------------------------------------------
 // mediasoup Router media codecs (audio-only for this PoC)
@@ -56,43 +51,36 @@ const mediaCodecs = [
 
 async function main() {
 	console.log('[demo] Starting real mediasoup produce-consume audio PoC...');
+	const wrtc = getWrtcRuntime();
 
 	// Step 1: Boot mediasoup server primitives (Worker + Router).
-	const worker = await mediasoup.createWorker({
-		logLevel: 'warn',
+	const {
+		worker,
+		router,
+		sendTransport: serverSendTransport,
+		recvTransport: serverRecvTransport,
+	} = await createLocalMediasoupServer({
+		mediaCodecs,
 		rtcMinPort: 40000,
 		rtcMaxPort: 40100,
+		listenIp: '127.0.0.1',
 	});
-
-	const router = await worker.createRouter({ mediaCodecs });
 	console.log('[server] mediasoup Worker and Router created');
-
-	// Step 2: Create server-side WebRtcTransports (one send-side, one recv-side).
-	const createTransportOptions = {
-		listenIps: [{ ip: '127.0.0.1', announcedIp: '127.0.0.1' }],
-		enableUdp: true,
-		enableTcp: true,
-		preferUdp: true,
-	};
-
-	const serverSendTransport = await router.createWebRtcTransport(
-		createTransportOptions,
-	);
-
-	const serverRecvTransport = await router.createWebRtcTransport(
-		createTransportOptions,
-	);
 
 	console.log('[server] send/recv WebRtcTransports created');
 
 	// Step 3: Build mediasoup-client Devices using mediasoup-client-wrtc.
-	const handlerFactory = WrtcHandler.createFactory(wrtc, loggerSink);
+	const handlerFactory = createWrtcHandlerFactory({ loggerSink });
 
-	const senderDevice = new Device({ handlerFactory });
-	await senderDevice.load({ routerRtpCapabilities: router.rtpCapabilities });
+	const { device: senderDevice } = await createWrtcDevice({
+		routerRtpCapabilities: router.rtpCapabilities,
+		handlerFactory,
+	});
 
-	const receiverDevice = new Device({ handlerFactory });
-	await receiverDevice.load({ routerRtpCapabilities: router.rtpCapabilities });
+	const { device: receiverDevice } = await createWrtcDevice({
+		routerRtpCapabilities: router.rtpCapabilities,
+		handlerFactory,
+	});
 
 	console.log(
 		'[client] sender/receiver Devices loaded:',
@@ -159,20 +147,10 @@ async function main() {
 		});
 
 	// Step 6: Generate synthetic audio and start producing from sender (silence).
-	const audioSource = new wrtc.nonstandard.RTCAudioSource();
-	const audioTrack = audioSource.createTrack();
-
-	const sampleRate = 48000;
-	const channelCount = 1;
-	const numberOfFrames = sampleRate / 100; // 10 ms PCM frames.
-	const samples = new Int16Array(numberOfFrames * channelCount);
-
-	const audioInterval = setInterval(() => {
-		audioSource.onData({ samples, sampleRate, channelCount, numberOfFrames });
-	}, 10);
+	const syntheticAudio = createSyntheticAudioTrack(wrtc);
 
 	const clientProducer = await clientSendTransport.produce({
-		track: audioTrack,
+		track: syntheticAudio.track,
 		codecOptions: {
 			opusStereo: false,
 			opusDtx: true,
@@ -186,16 +164,14 @@ async function main() {
 	}
 
 	// Step 7: Server consumes producer into recv transport (paused first).
-  const options = {
+	const options = {
 		producerId: serverProducer.id,
 		rtpCapabilities: receiverDevice.recvRtpCapabilities,
 		paused: true,
-	}
+	};
 
 	if (!router.canConsume(options)) {
-		throw new Error(
-      'Router cannot consume with receiver device RTP capabilities'
-    );
+		throw new Error('Router cannot consume with receiver device RTP capabilities');
 	}
 
 	const serverConsumer = await serverRecvTransport.consume(options);
@@ -215,19 +191,13 @@ async function main() {
 	console.log('[client] consumer created:', clientConsumer.id);
 
 	// Step 9: Verify real media flow using RTCAudioSink frame callbacks.
-	const audioSink = new wrtc.nonstandard.RTCAudioSink(clientConsumer.track);
-	let framesReceived = 0;
-
-	audioSink.ondata = () => {
-		framesReceived++;
-	};
+	const audioSink = createAudioSink(wrtc, clientConsumer.track);
 
 	console.log('[client] waiting up to 1500 ms for real audio frames...');
 
-	const deadline = Date.now() + 1500;
-	while (framesReceived === 0 && Date.now() < deadline) {
-		await new Promise<void>((resolve) => setTimeout(resolve, 50));
-	}
+	await audioSink.wait(1500);
+
+	const framesReceived = audioSink.getFramesReceived();
 
 	console.log('[client] frames received:', framesReceived);
 
@@ -237,11 +207,9 @@ async function main() {
 
 	// Step 10: Cleanup in reverse order.
 	audioSink.stop();
-	audioSink.ondata = undefined;
-	clearInterval(audioInterval);
 
 	clientConsumer.track.stop();
-	audioTrack.stop();
+	syntheticAudio.stop();
 
 	clientConsumer.close();
 	await serverConsumer.close();

@@ -196,6 +196,24 @@ interface WrtcLike {
 }
 ```
 
+### Testing Helpers Subpath
+
+The package also exposes testing/integration helpers via:
+
+```ts
+import {
+  createAudioSink,
+  createLocalMediasoupServer,
+  createLoggerSink,
+  createSyntheticAudioTrack,
+  createWrtcDevice,
+  createWrtcHandlerFactory,
+  getWrtcRuntime,
+} from "mediasoup-client-wrtc/testing";
+```
+
+This subpath is intended for local integration tooling and example wiring.
+
 ## Handler Behavior
 
 - Computes native RTP capabilities by generating a local SDP offer with

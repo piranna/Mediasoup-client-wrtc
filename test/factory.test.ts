@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { WrtcHandler } from "../dist/index.js";
+import { WrtcHandler } from "../src/index.ts";
 
 const VALID_OFFER_SDP = `v=0
 o=- 0 0 IN IP4 127.0.0.1

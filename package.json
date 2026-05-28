@@ -16,13 +16,17 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./testing": {
+      "import": "./dist/testing/index.js",
+      "types": "./dist/testing/index.d.ts"
     }
   },
   "scripts": {
     "build": "tsc",
     "prepare": "npm run build",
     "pretest": "npm run build",
-    "test": "node --experimental-test-coverage --test test/*.test.ts"
+    "test": "node --experimental-test-coverage --test-coverage-include='src/**/*.ts' --test test/*.test.ts"
   },
   "dependencies": {
     "mediasoup-client": "^3.20.0"

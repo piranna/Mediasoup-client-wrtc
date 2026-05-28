@@ -4,7 +4,7 @@ import test from "node:test";
 import * as sdpTransform from "sdp-transform";
 import { ortc, testFakeParameters } from "mediasoup-client";
 
-import { WrtcHandler } from "../dist/index.js";
+import { WrtcHandler } from "../src/index.ts";
 import { setupTransportWithoutLocalSdpForTest } from "./test-hooks.ts";
 
 const VALID_OFFER_SDP = `v=0
